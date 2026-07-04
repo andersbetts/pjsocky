@@ -8,8 +8,8 @@ available here, and getting pjproject's own `pjsua` CLI to act as a
 peer didn't pan out either).
 
 These are written now, deliberately, rather than deferred - so the
-moment real Asterisk access exists (e.g. against lift-emg-tel's actual
-PBX), running this file is what verifies the whole outgoing +
+moment real Asterisk access exists, running this file is what verifies
+the whole outgoing +
 incoming + video call path end to end, instead of starting from
 scratch. Until then, they skip cleanly (exit 0, printed as SKIP) rather
 than failing, since the gap is "no test peer available", not a
@@ -194,12 +194,41 @@ def test_incoming_call_and_answer(c):
     c.call("call.hangup_all")
 
 
+def test_ring_timeout_auto_rejects(c):
+    """Requires the same external caller as test_incoming_call_and_answer.
+    Sets a short ring timeout, then deliberately does NOT answer the
+    incoming call - confirms the daemon auto-rejects it with 480
+    Temporarily Unavailable once the timeout elapses, rather than
+    ringing forever - see docs/PROTOCOL.md's config.set_ring_timeout."""
+    c.call("account.configure", account_params())
+    c.call("account.register")
+    wait_for_event(c, "reg_state")
+
+    ring_timeout_sec = 3
+    resp = c.call("config.set_ring_timeout", {"seconds": ring_timeout_sec})
+    assert resp["ok"] is True, resp
+
+    print("  waiting up to 30s for an incoming call to "
+          f"{os.environ['PJSOCKY_TEST_ASTERISK_SIP_URI']} ...")
+    event = wait_for_event(c, "incoming_call", timeout=30)
+    call_id = event["data"]["call_id"]
+
+    event = wait_for_event(c, "call_state", timeout=ring_timeout_sec + 10)
+    while event["data"]["state"] != "DISCONNECTED":
+        event = wait_for_event(c, "call_state", timeout=ring_timeout_sec + 10)
+    assert event["data"]["call_id"] == call_id, event
+    assert event["data"]["last_status"] == 480, (
+        f"expected an auto-reject with 480 Temporarily Unavailable: {event}"
+    )
+
+
 TESTS = [
     test_register_against_real_pbx,
     test_outgoing_audio_call,
     test_outgoing_video_call,
     test_im_send_and_message_status,
     test_incoming_call_and_answer,
+    test_ring_timeout_auto_rejects,
 ]
 
 
@@ -222,7 +251,8 @@ def main():
     failures = []
     for test_fn in TESTS:
         name = test_fn.__name__
-        if name == "test_incoming_call_and_answer" and not os.environ.get(
+        if name in ("test_incoming_call_and_answer",
+                     "test_ring_timeout_auto_rejects") and not os.environ.get(
             "PJSOCKY_TEST_ASTERISK_PEER_URI"
         ):
             print(f"SKIP  {name}: needs a caller, but no way to prompt one "

@@ -172,3 +172,15 @@ target_compile_definitions(pjsocky PRIVATE PJSOCKY_VERSION="${PROJECT_VERSION}")
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(pjsocky PRIVATE -Wall -Wextra)
 endif()
+
+# `cmake --install build` for the pjsocky binary itself (default prefix
+# /usr/local - see packaging/pjsocky.service, whose ExecStart expects
+# /usr/local/bin/pjsocky). The systemd unit and sample environment file
+# in packaging/ are NOT installed automatically: where they belong
+# (/etc/systemd/system, /etc/default) is a distro/firmware policy call,
+# so packaging scripts copy them explicitly - see the instructions at
+# the top of packaging/pjsocky.service. Note pjproject's own
+# add_subdirectory install rules also run on --install; installing only
+# pjsocky needs `cmake --install build --component <none>`-style
+# filtering or just copying build/pjsocky manually.
+install(TARGETS pjsocky RUNTIME DESTINATION bin)

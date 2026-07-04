@@ -1,0 +1,55 @@
+# Build against a pinned pjproject sibling checkout and run both test
+# suites. The pjproject pin is the single place the "known good"
+# upstream version is recorded (README.md points here) - bump it
+# deliberately, with a CI run, not implicitly.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out pjsocky
+        uses: actions/checkout@v4
+        with:
+          path: pjsocky
+
+      # Sibling layout, exactly as documented in README.md "Building".
+      - name: Check out pjproject (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: pjsip/pjproject
+          # 2.17-5-geccdebae7 - the version pjsocky is developed and
+          # tested against.
+          ref: eccdebae7bb41d99e7911908fbef300330573863
+          path: pjproject
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends \
+            build-essential cmake \
+            libasound2-dev libopenh264-dev libsdl2-dev
+
+      - name: Configure
+        run: cmake -B pjsocky/build -S pjsocky
+
+      - name: Build
+        run: cmake --build pjsocky/build -j"$(nproc)"
+
+      - name: Protocol test suite
+        run: python3 pjsocky/tests/protocol/test_basic.py
+
+      # Real SIP: registration, audio call, H.264 video call, MESSAGE
+      # delivery, incoming call - against a throwaway dockerized
+      # Asterisk (docker is preinstalled on GitHub's Ubuntu runners).
+      - name: Live call tests (dockerized Asterisk)
+        run: python3 pjsocky/tests/asterisk/run_live_tests.py

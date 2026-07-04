@@ -107,11 +107,12 @@ static pj_status_t set_nonblocking(pj_sock_t sock)
 /*
  * docs/PROTOCOL.md "Versioning": follows semver against the protocol
  * document itself, not PJSOCKY_VERSION (the daemon's own release
- * version, reported separately below). Still "-draft" - see the note at
- * the top of PROTOCOL.md: bump this (and that note) together once the
- * v1 command surface is considered stable enough to tag.
+ * version, reported separately below). Bumped from "1.0.0-draft" once
+ * the v1 command surface was considered stable enough to tag - see the
+ * note at the top of PROTOCOL.md. Any future breaking change bumps to
+ * 2.x per the same note.
  */
-#define PJSOCKY_PROTOCOL_VERSION "1.0.0-draft"
+#define PJSOCKY_PROTOCOL_VERSION "1.0.0"
 
 static void build_hello_data(pj_pool_t *pool, pj_json_elem *data, void *user_data)
 {

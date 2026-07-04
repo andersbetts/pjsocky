@@ -1,9 +1,9 @@
 # pjsocky control protocol
 
-Version: **1.0.0-draft** (no wire bytes shipped yet — draft until v1.0.0 is
-tagged, then this document is append-only within the 1.x line: fields may
-be added, never removed or repurposed. Breaking changes bump to 2.x and
-must be negotiable, see [Versioning](#versioning)).
+Version: **1.0.0** (tagged — this document is now append-only within the
+1.x line: fields may be added, never removed or repurposed. Breaking
+changes bump to 2.x and must be negotiable, see
+[Versioning](#versioning)).
 
 This document is the single source of truth for the wire protocol. Do not
 let the C implementation grow behavior that isn't described here first.
@@ -260,7 +260,7 @@ Result:
 ```json
 {
   "devices": [
-    {"id": 0, "name": "tp7-cam0", "driver": "v4l2", "dir": "capture"}
+    {"id": 0, "name": "cam0", "driver": "v4l2", "dir": "capture"}
   ]
 }
 ```
@@ -347,6 +347,21 @@ Wraps `pjsua_call_hangup`. Result: `{}`.
 Params: none. Hangs up the current call if any (v1 is single-call); a
 no-op returning `{}` if idle, not an error.
 
+### `config.set_ring_timeout`
+
+Params: `{"seconds": 30}` (required, integer >= 0). `0` disables the
+ring timeout (the default) — an incoming call rings until the client
+answers/hangs up or the remote cancels. A nonzero value auto-rejects an
+unanswered incoming call with `480 Temporarily Unavailable` once it's
+been ringing that long. Applies to future incoming calls; does not
+affect one already ringing. Result: `{}`. See
+[Open questions](#open-questions).
+
+### `config.get_ring_timeout`
+
+Params: none. Result: `{"seconds": 30}` — the value last set via
+`config.set_ring_timeout`, or `0` if never set.
+
 ### `im.send`
 
 Params: `{"to": "sip:100@example.com", "content": "hello", "mime_type": "text/plain"}`
@@ -432,9 +447,10 @@ tracks the real state explicitly instead of deriving it from that flag.)
 ```json
 {"event": "incoming_call", "data": {"call_id": 0, "acc_id": 0, "from": "sip:200@example.com", "has_video": false}}
 ```
-Fired from `on_incoming_call`. The daemon does **not** auto-answer or
-auto-reject — the client must call `call.answer` or `call.hangup`. There
-is no default timeout in v1 (see [Open questions](#open-questions)); the
+Fired from `on_incoming_call`. The daemon does **not** auto-answer. It
+auto-*rejects* only if a ring timeout has been configured via
+`config.set_ring_timeout` (disabled, i.e. unbounded ring, by default) —
+otherwise the client must call `call.answer` or `call.hangup`, and the
 call rings until the client acts or the remote cancels.
 
 ### `call_state`
@@ -534,14 +550,19 @@ first:
 
 ## Open questions
 
-- [ ] Incoming-call ring timeout: should the daemon apply a default
+- [x] Incoming-call ring timeout: should the daemon apply a default
       (e.g. auto-reject after N seconds) or is an unbounded ring
-      acceptable given a single always-connected controller on tp4/tp7?
+      acceptable given a single always-connected controller? — resolved:
+      no fixed default; made an explicit runtime choice instead via
+      `config.set_ring_timeout`/`config.get_ring_timeout` (0 = disabled,
+      unbounded ring, matching the original v1 behavior). See the
+      `incoming_call` event and `call.hangup`'s note on rejection codes
+      — the auto-reject uses `480 Temporarily Unavailable`.
 - [x] `call.answer` video default when the client doesn't specify
       `video`: resolved — mirrors the incoming offer (see the
       `call.answer` section above), not a fixed audio-only default.
 - [ ] Does the control socket need any authentication beyond filesystem
-      permissions, given tp4/tp7's threat model? Revisit before exposing
+      permissions, given the target threat model? Revisit before exposing
       the TCP transport option outside development builds.
 - [x] Reconnect behavior: if the controlling client drops mid-call, does
       the call continue and simply become uncontrollable until a client

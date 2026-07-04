@@ -1,0 +1,64 @@
+# systemd unit for pjsocky - see CONTEXT.md (build-order step 14) and
+# docs/PROTOCOL.md. Install:
+#
+#   cmake --install build              # puts pjsocky in /usr/local/bin
+#   useradd -r -s /usr/sbin/nologin pjsocky
+#   cp packaging/pjsocky.service /etc/systemd/system/
+#   cp packaging/pjsocky.conf.sample /etc/default/pjsocky   # then edit
+#   systemctl daemon-reload && systemctl enable --now pjsocky
+#
+# Clients talk NDJSON over /run/pjsocky/pjsocky.sock (path settable in
+# /etc/default/pjsocky). The socket's filesystem permissions are the
+# protocol's whole trust boundary in v1 (docs/PROTOCOL.md "Transport"),
+# which is why RuntimeDirectoryMode below is 0750: only root and the
+# pjsocky group reach the socket - add controller users to that group.
+
+[Unit]
+Description=pjsocky headless SIP audio/video call daemon
+Documentation=https://github.com/pjsip/pjproject
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pjsocky
+
+# Config is environment variables only, by design (see CONTEXT.md
+# "Decide config file format"). Defaults here; /etc/default/pjsocky
+# (optional, see pjsocky.conf.sample) overrides them.
+Environment=PJSOCKY_SOCK_PATH=/run/pjsocky/pjsocky.sock
+EnvironmentFile=-/etc/default/pjsocky
+
+# /run/pjsocky, created fresh each start, owned by the service user.
+RuntimeDirectory=pjsocky
+RuntimeDirectoryMode=0750
+
+# Dedicated system user; audio/video groups grant the ALSA and V4L2
+# device access a call needs on typical Linux targets - adjust to
+# whatever the target device's ownership model actually is.
+User=pjsocky
+Group=pjsocky
+SupplementaryGroups=audio video
+
+# An unattended call box should come back on its own, always.
+Restart=always
+RestartSec=2
+
+# Clean shutdown (SIGTERM -> pjsua_destroy) takes ~1-2s; see CONTEXT.md
+# build-order step 5's notes. 10s leaves headroom before SIGKILL.
+TimeoutStopSec=10
+
+# Hardening. Deliberately not PrivateDevices=yes / ProtectSystem=strict:
+# calls need real audio/video device nodes, and stricter modes are worth
+# revisiting only on the real target hardware.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

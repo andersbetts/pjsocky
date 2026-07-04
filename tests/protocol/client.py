@@ -87,6 +87,7 @@ class Client:
         self.sock.settimeout(timeout)
         self.sock.connect(sock_path)
         self._next_id = 1
+        self._pending_events = []
         # docs/PROTOCOL.md "Versioning": every connection starts with an
         # unsolicited "hello" event, before anything else - consume it
         # here so callers never have to special-case the first read.
@@ -103,20 +104,29 @@ class Client:
         return json.loads(buf.decode())
 
     def call(self, cmd, params=None):
-        """Send a request, return its response. Assumes no event is
-        pending ahead of it on the wire - use read_event() first if one
-        is expected (e.g. right after account.register)."""
+        """Send a request, return its response. Events arriving before
+        the response are queued for read_event() - docs/PROTOCOL.md
+        makes no ordering promise between a response and events, and
+        it's real: pjsua fires call_state CALLING synchronously inside
+        pjsua_call_make_call, so that event hits the wire before
+        call.dial's own response."""
         req_id = str(self._next_id)
         self._next_id += 1
         req = {"id": req_id, "cmd": cmd}
         if params is not None:
             req["params"] = params
         self.sock.sendall((json.dumps(req) + "\n").encode())
-        resp = self._recv_line()
-        assert resp.get("id") == req_id, f"id mismatch: sent {req_id}, got {resp}"
-        return resp
+        while True:
+            msg = self._recv_line()
+            if "id" not in msg:
+                self._pending_events.append(msg)
+                continue
+            assert msg["id"] == req_id, f"id mismatch: sent {req_id}, got {msg}"
+            return msg
 
     def read_event(self):
+        if self._pending_events:
+            return self._pending_events.pop(0)
         msg = self._recv_line()
         assert "event" in msg and "id" not in msg, f"expected an event, got {msg}"
         return msg

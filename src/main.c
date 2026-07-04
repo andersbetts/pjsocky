@@ -196,6 +196,23 @@ int main(void)
         return 1;
     }
 
+    /*
+     * Headless fallback: on a box with zero audio devices (a container,
+     * or a stripped-down target without ALSA devices) route call audio
+     * through pjsua's built-in null sound device up front, instead of
+     * failing to open a real device when the first call's media comes
+     * up. When real devices exist they stay the default; device.list_audio
+     * truthfully reports an empty list either way (docs/PROTOCOL.md
+     * doesn't promise a non-empty device list).
+     */
+    if (pjmedia_aud_dev_count() == 0) {
+        PJ_LOG(3, (THIS_FILE,
+                   "No audio devices found - using the null sound device"));
+        status = pjsua_set_null_snd_dev();
+        if (status != PJ_SUCCESS)
+            pjsua_perror(THIS_FILE, "Error setting null sound device", status);
+    }
+
     PJ_LOG(3, (THIS_FILE, "pjsocky started idle, no accounts configured"));
 
     {

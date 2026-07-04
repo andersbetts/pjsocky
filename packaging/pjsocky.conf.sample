@@ -1,0 +1,24 @@
+# pjsocky environment configuration - copy to /etc/default/pjsocky.
+#
+# Read by the systemd unit via EnvironmentFile= (see pjsocky.service);
+# pjsocky itself is configured purely through environment variables
+# (a deliberate design decision, see CONTEXT.md), so this file is the
+# entire configuration surface. Every setting is optional - the
+# defaults below are what an unset variable means.
+
+# Control socket path. The systemd unit defaults this to
+# /run/pjsocky/pjsocky.sock (inside its RuntimeDirectory); the daemon's
+# own built-in fallback is /tmp/pjsocky.sock, meant for development.
+#PJSOCKY_SOCK_PATH=/run/pjsocky/pjsocky.sock
+
+# Log verbosity 0 (none) - 6 (trace). Unset uses pjsua's own defaults
+# (5 logged / 4 on console; pjsocky logs to stdout -> journald).
+#PJSOCKY_LOG_LEVEL=4
+
+# Control-connection write deadline in milliseconds: a client that
+# stops reading past this is declared dead and disconnected
+# (docs/PROTOCOL.md "Backpressure").
+#PJSOCKY_WRITE_TIMEOUT_MSEC=5000
+
+# PJSOCKY_TEST_FAST_TIMERS is test-only (shrinks real SIP transaction
+# timers) - never set it on a production system.

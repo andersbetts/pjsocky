@@ -18,7 +18,7 @@
 PJ_BEGIN_DECL
 
 /*
- * Plenty for any realistic tp4/tp7 device inventory. Callers allocate
+ * Plenty for any realistic device inventory. Callers allocate
  * an array of this capacity.
  */
 #define PJSOCKY_MAX_DEVICES   32

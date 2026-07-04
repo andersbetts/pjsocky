@@ -13,9 +13,64 @@
 /* v1 supports one active call at a time - see CONTEXT.md. */
 static pjsua_call_id g_call_id = PJSUA_INVALID_ID;
 
+/* 0 = disabled (default): unbounded ring, matching v1's original
+ * behavior before this was made configurable - see
+ * pjsocky_call_set_ring_timeout(). */
+static unsigned g_ring_timeout_sec = 0;
+
+/*
+ * Armed only while an incoming call is ringing and g_ring_timeout_sec >
+ * 0; disarmed as soon as that call leaves INCOMING/EARLY state
+ * (answered or hung up) or the timer itself fires and auto-rejects it.
+ * entry.user_data carries the call_id it was scheduled for, so
+ * ring_timer_cb() can re-check the call is still the one it applies to -
+ * pjsip's timer heap can already have dequeued a callback by the time a
+ * cancel would run (e.g. the call gets answered in the same tick).
+ */
+static pj_timer_entry g_ring_timer;
+static pj_bool_t g_ring_timer_scheduled = PJ_FALSE;
+
 pjsua_call_id pjsocky_call_get_id(void)
 {
     return g_call_id;
+}
+
+void pjsocky_call_set_ring_timeout(unsigned seconds)
+{
+    g_ring_timeout_sec = seconds;
+}
+
+unsigned pjsocky_call_get_ring_timeout(void)
+{
+    return g_ring_timeout_sec;
+}
+
+static void cancel_ring_timer(void)
+{
+    if (!g_ring_timer_scheduled)
+        return;
+    pjsua_cancel_timer(&g_ring_timer);
+    g_ring_timer_scheduled = PJ_FALSE;
+}
+
+static void ring_timer_cb(pj_timer_heap_t *th, pj_timer_entry *entry)
+{
+    pjsua_call_id call_id = (pjsua_call_id)(pj_ssize_t)entry->user_data;
+    pjsua_call_info info;
+
+    PJ_UNUSED_ARG(th);
+    g_ring_timer_scheduled = PJ_FALSE;
+
+    if (pjsua_call_get_info(call_id, &info) != PJ_SUCCESS)
+        return;
+    if (info.state != PJSIP_INV_STATE_INCOMING &&
+        info.state != PJSIP_INV_STATE_EARLY)
+    {
+        return;
+    }
+
+    PJ_LOG(3, (THIS_FILE, "call %d: ring timeout - auto-rejecting", call_id));
+    pjsua_call_hangup(call_id, PJSIP_SC_TEMPORARILY_UNAVAILABLE, NULL, NULL);
 }
 
 /*
@@ -155,6 +210,17 @@ void pjsocky_call_on_call_state(pjsua_call_id call_id, pjsip_event *e)
         return;
     }
 
+    /* The ring timer only applies while its call is INCOMING/EARLY -
+     * cancel it the moment that call moves on (answered or hung up),
+     * regardless of what caused the transition. */
+    if (g_ring_timer_scheduled &&
+        call_id == (pjsua_call_id)(pj_ssize_t)g_ring_timer.user_data &&
+        info.state != PJSIP_INV_STATE_INCOMING &&
+        info.state != PJSIP_INV_STATE_EARLY)
+    {
+        cancel_ring_timer();
+    }
+
     /* Terminal state for this call_id - see docs/PROTOCOL.md
      * "call_state": it may be reused by a later call after this. */
     if (info.state == PJSIP_INV_STATE_DISCONNECTED && call_id == g_call_id)
@@ -288,6 +354,21 @@ void pjsocky_call_on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id,
     if (status != PJ_SUCCESS) {
         PJ_PERROR(1, (THIS_FILE, status, "pjsua_call_get_info() failed"));
         return;
+    }
+
+    if (g_ring_timeout_sec > 0) {
+        pj_time_val delay;
+
+        cancel_ring_timer(); /* defensive; v1's single-call model means
+                                 there shouldn't be a stale one armed */
+        pj_timer_entry_init(&g_ring_timer, 0, (void*)(pj_ssize_t)call_id,
+                             &ring_timer_cb);
+        delay.sec = (long)g_ring_timeout_sec;
+        delay.msec = 0;
+        if (pjsua_schedule_timer(&g_ring_timer, &delay) == PJ_SUCCESS)
+            g_ring_timer_scheduled = PJ_TRUE;
+        else
+            PJ_LOG(1, (THIS_FILE, "failed to schedule ring timeout timer"));
     }
 
     pjsocky_events_push(pjsocky_events_instance(), "incoming_call",

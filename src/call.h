@@ -53,6 +53,19 @@ pj_status_t pjsocky_call_answer(pjsua_call_id call_id, unsigned code,
 pj_status_t pjsocky_call_remote_offered_video(pjsua_call_id call_id,
                                                pj_bool_t *p_has_video);
 
+/*
+ * Configure the incoming-call ring timeout in seconds. 0 (the default)
+ * disables it - an incoming call rings until the client answers/hangs
+ * up or the remote cancels, matching v1's original behavior before this
+ * was made configurable. A nonzero value auto-rejects an unanswered
+ * incoming call once it's been ringing that long (486 Busy Here would
+ * be misleading here - the daemon uses 480 Temporarily Unavailable).
+ * Applies to future incoming calls; does not affect one already
+ * ringing. See docs/PROTOCOL.md's "config.set_ring_timeout".
+ */
+void pjsocky_call_set_ring_timeout(unsigned seconds);
+unsigned pjsocky_call_get_ring_timeout(void);
+
 /* String name of a pjsip_inv_state value, e.g. "CONFIRMED" - shared
  * between the call_state event builder and call.get_info's "state"
  * field so the mapping only lives in one place. */

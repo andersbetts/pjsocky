@@ -432,6 +432,33 @@ static pj_status_t cmd_call_answer(pj_pool_t *pool,
     return pjsocky_call_answer(call_id, (unsigned)code, video);
 }
 
+static pj_status_t cmd_config_set_ring_timeout(pj_pool_t *pool,
+                                                const pj_json_elem *params,
+                                                pj_json_elem *result)
+{
+    int seconds;
+
+    PJ_UNUSED_ARG(pool);
+    PJ_UNUSED_ARG(result);
+
+    if (get_int_member(params, "seconds", &seconds) != PJ_SUCCESS || seconds < 0)
+        return PJ_EINVAL;
+
+    pjsocky_call_set_ring_timeout((unsigned)seconds);
+    return PJ_SUCCESS;
+}
+
+static pj_status_t cmd_config_get_ring_timeout(pj_pool_t *pool,
+                                                const pj_json_elem *params,
+                                                pj_json_elem *result)
+{
+    PJ_UNUSED_ARG(params);
+
+    pjsocky_json_add_number(pool, result, "seconds",
+                             (float)pjsocky_call_get_ring_timeout());
+    return PJ_SUCCESS;
+}
+
 static pj_status_t cmd_im_send(pj_pool_t *pool,
                                 const pj_json_elem *params,
                                 pj_json_elem *result)
@@ -488,6 +515,8 @@ static const cmd_entry CMD_TABLE[] = {
     { "call.hangup_all", &cmd_call_hangup_all },
     { "call.get_info", &cmd_call_get_info },
     { "call.answer", &cmd_call_answer },
+    { "config.set_ring_timeout", &cmd_config_set_ring_timeout },
+    { "config.get_ring_timeout", &cmd_config_get_ring_timeout },
     { "im.send", &cmd_im_send },
     { "im.typing", &cmd_im_typing },
 };

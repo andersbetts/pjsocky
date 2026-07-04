@@ -149,10 +149,12 @@ def test_device_list_audio(c):
     assert resp["ok"] is True, resp
     devices = resp["result"]["devices"]
     # Not asserting specific device names/counts - that's whatever audio
-    # hardware/backend the test machine has (pjmedia always enumerates
-    # *something*, even if it's just a null/dummy device on a headless
-    # box). What matters is the shape of the response.
-    assert isinstance(devices, list) and len(devices) > 0, resp
+    # hardware/backend the test machine has. An *empty* list is
+    # legitimate too: a truly headless box (e.g. a CI container) has no
+    # ALSA devices at all, and the daemon reports that truthfully while
+    # falling back to pjsua's null sound device internally (see main.c).
+    # What matters here is the shape of the response.
+    assert isinstance(devices, list), resp
     for dev in devices:
         assert set(dev.keys()) == {
             "id", "name", "input_channels", "output_channels"
@@ -470,6 +472,43 @@ def test_slow_reader_gets_dropped(c):
 test_slow_reader_gets_dropped.extra_env = {"PJSOCKY_WRITE_TIMEOUT_MSEC": "300"}
 
 
+def test_ring_timeout_default_is_disabled(c):
+    resp = c.call("config.get_ring_timeout")
+    assert resp["ok"] is True, resp
+    assert resp["result"] == {"seconds": 0}, resp
+
+
+def test_ring_timeout_set_and_get_round_trip(c):
+    resp = c.call("config.set_ring_timeout", {"seconds": 30})
+    assert resp["ok"] is True, resp
+    assert resp["result"] == {}, resp
+
+    resp = c.call("config.get_ring_timeout")
+    assert resp["ok"] is True, resp
+    assert resp["result"] == {"seconds": 30}, resp
+
+
+def test_ring_timeout_can_be_disabled_again(c):
+    c.call("config.set_ring_timeout", {"seconds": 15})
+    resp = c.call("config.set_ring_timeout", {"seconds": 0})
+    assert resp["ok"] is True, resp
+
+    resp = c.call("config.get_ring_timeout")
+    assert resp["result"] == {"seconds": 0}, resp
+
+
+def test_ring_timeout_missing_param(c):
+    resp = c.call("config.set_ring_timeout", {})
+    assert resp["ok"] is False, resp
+    assert resp["error"]["code"] == "invalid_params", resp
+
+
+def test_ring_timeout_negative_rejected(c):
+    resp = c.call("config.set_ring_timeout", {"seconds": -1})
+    assert resp["ok"] is False, resp
+    assert resp["error"]["code"] == "invalid_params", resp
+
+
 def test_im_typing_without_registration_fails(c):
     c.call("account.configure", {
         "sip_uri": "sip:1000@127.0.0.1:1",
@@ -551,6 +590,11 @@ TESTS = [
     test_im_typing_without_registration_fails,
     test_im_typing_with_no_account_fails,
     test_im_typing_missing_params,
+    test_ring_timeout_default_is_disabled,
+    test_ring_timeout_set_and_get_round_trip,
+    test_ring_timeout_can_be_disabled_again,
+    test_ring_timeout_missing_param,
+    test_ring_timeout_negative_rejected,
 ]
 
 
