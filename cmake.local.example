@@ -1,0 +1,10 @@
+# Copy this file to "cmake.local" (gitignored) to override local build
+# settings without touching anything tracked by git.
+#
+# cmake.local is included, if present, near the top of CMakeLists.txt via
+# `include(... OPTIONAL)` - it's plain CMake script, evaluated in the same
+# scope as the top-level CMakeLists.txt.
+
+# Path to your local pjproject checkout, if it isn't a sibling directory of
+# pjsocky (i.e. not "../pjproject" relative to this file).
+# set(PJSOCKY_PJPROJECT_DIR "/home/you/work/pjproject")

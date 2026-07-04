@@ -1,0 +1,6 @@
+# Personal, per-checkout build override - never commit this.
+/cmake.local
+
+# Out-of-source build directories
+/build/
+/build-*/
