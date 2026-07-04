@@ -24,7 +24,7 @@ class PjsockyProcess:
         self.sock_path = sock_path
         self.proc = None
 
-    def start(self, timeout=5):
+    def start(self, timeout=5, extra_env=None):
         if os.path.exists(self.sock_path):
             os.unlink(self.sock_path)
         # See main.c: shrinks SIP transaction timers so a registration
@@ -35,6 +35,8 @@ class PjsockyProcess:
             PJSOCKY_SOCK_PATH=self.sock_path,
             PJSOCKY_TEST_FAST_TIMERS="1",
         )
+        if extra_env:
+            env.update(extra_env)
         self.proc = subprocess.Popen(
             [self.exe_path],
             stdout=subprocess.PIPE,
@@ -64,7 +66,14 @@ class PjsockyProcess:
             self.proc.wait()
 
     def log(self):
-        if self.proc and self.proc.stdout:
+        """Daemon output so far. Blocks until the daemon exits (stdout
+        EOF), so call stop() first - reading the log of a still-running
+        daemon would hang forever waiting for that EOF (this bit once:
+        a test failure with a healthy daemon deadlocked the suite)."""
+        if self.proc is None:
+            return ""
+        self.stop()
+        if self.proc.stdout:
             return self.proc.stdout.read().decode(errors="replace")
         return ""
 

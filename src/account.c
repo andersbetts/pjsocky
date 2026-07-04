@@ -87,6 +87,31 @@ pj_status_t pjsocky_account_unregister(void)
     return pjsua_acc_set_registration(g_acc_id, PJ_FALSE);
 }
 
+pj_status_t pjsocky_account_remove(void)
+{
+    pj_status_t status;
+
+    if (g_acc_id == PJSUA_INVALID_ID)
+        return PJ_EINVALIDOP;
+
+    /* docs/PROTOCOL.md "account.remove": refuse while registered rather
+     * than silently un-REGISTERing on the client's behalf - the client
+     * must account.unregister first, so registration teardown is always
+     * an explicit, observable step (reg_state event). g_registered only
+     * covers a *successful* REGISTER; an attempt still in flight is
+     * fine to delete - pjsua_acc_del cancels it. */
+    if (g_registered)
+        return PJ_EINVALIDOP;
+
+    status = pjsua_acc_del(g_acc_id);
+    if (status != PJ_SUCCESS)
+        return status;
+
+    g_acc_id = PJSUA_INVALID_ID;
+    g_registered = PJ_FALSE;
+    return PJ_SUCCESS;
+}
+
 static void build_reg_state_data(pj_pool_t *pool, pj_json_elem *data,
                                   void *user_data)
 {

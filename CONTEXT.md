@@ -195,10 +195,11 @@ Events (`{"event":..,"data":{...}}`, no `id`, pushed async):
       `packaging/pjsocky.service` is still a step 14 (packaging) task.
 - [x] Decide config file format for the socket path, log level, etc.
       (separate from the runtime protocol). - **Decided: env vars, no
-      config file.** Implemented: `PJSOCKY_SOCK_PATH` (since step 6) and
+      config file.** Implemented: `PJSOCKY_SOCK_PATH` (since step 6),
       `PJSOCKY_LOG_LEVEL` (0-6, overrides both `pjsua_logging_config.level`
-      and `.console_level`; unset uses pjsua's own defaults 5/4) - see
-      `main.c`.
+      and `.console_level`; unset uses pjsua's own defaults 5/4) and
+      `PJSOCKY_WRITE_TIMEOUT_MSEC` (control-socket write deadline,
+      default 5000 - since step 12) - see `main.c`.
 - [x] Decide protocol version negotiation: a `hello`/handshake message
       exchanged on connect, or just documented compatibility per release
       tag? - **Decided: keep `hello`.** Implemented in `server.c`
@@ -494,21 +495,101 @@ Events (`{"event":..,"data":{...}}`, no `id`, pushed async):
         anything - the PBX itself generates the delivery outcome - so
         it should be one of the easier `test_live_call.py` tests to
         actually exercise once real access exists.
-12. [ ] Robustness pass: malformed JSON input, client disconnect
+12. [x] Robustness pass: malformed JSON input, client disconnect
         mid-call, command timeouts, daemon behavior on pjsua callback
         errors — write down expected behavior in PROTOCOL.md, then
-        implement.
+        implement. Done spec-first as instructed: PROTOCOL.md gained a
+        "Robustness" section (malformed-input table, disconnect
+        semantics, no-command-timeouts-by-design, callback-error
+        policy), a rewritten "Backpressure" section, and a new generic
+        `error` event. The audit that preceded it found the spec and
+        the implementation had diverged in several places — worth
+        listing, since each one was "documented but not true":
+        - **Second concurrent connection**: PROTOCOL.md always promised
+          an immediate `connection_refused` + close; the implementation
+          actually left the second client hanging silently in the
+          listen backlog until the first disconnected. Fixed by
+          reworking `server.c` from blocking-accept-then-serve into a
+          single select() loop over listen + connection sockets
+          (connection socket now non-blocking). This also fixed the
+          other documented limitation in server.h: SIGTERM/SIGINT are
+          now honored within one poll interval even while a client is
+          connected (previously the loop couldn't notice the flag until
+          the client went away on its own).
+        - **Backpressure**: the spec promised drop-oldest event
+          queueing, which was never implemented — the real behavior was
+          a blocking send() under the shared events lock, so one
+          stalled client could freeze pjsua's worker thread (event
+          pushes) and all responses, indefinitely. Rather than build
+          the queue, the spec was changed (it's still -draft): all
+          control-socket writes get a bounded deadline
+          (`PJSOCKY_WRITE_TIMEOUT_MSEC` env var, default 5000ms,
+          see proto/server.h); a client that stays unreadable past it
+          is declared dead and dropped. Reasoning in PROTOCOL.md's
+          Backpressure section: connection drop is detectable and
+          forces an explicit resync; silent per-event loss isn't.
+        - **`account.remove`**: documented in PROTOCOL.md since step 6
+          (account.configure's "remove first" reference) but never
+          implemented — no dispatch entry existed at all. Implemented
+          (refuses while registered, so registration teardown stays an
+          explicit observable step).
+        - **Malformed JSON / missing `id`**: previously the daemon
+          silently closed the connection on any line it couldn't parse
+          well enough to answer. Now (per the new spec table): a
+          garbage line gets an `error` event with code `bad_request`
+          and the connection survives (NDJSON framing means the next
+          line is independent); only an oversized (>8192B) line still
+          closes, since framing can't be resynchronized mid-line.
+        - **Disconnect mid-call** (was an open question in both docs):
+          resolved as "the call stays up" — control connection and SIP
+          state are fully independent; events while disconnected are
+          discarded; a reconnecting client resyncs via `status.get`.
+          For the tp4/tp7 use case a crashed controller must never
+          tear down an active call.
+
+        Two genuine bugs found by the new tests, both worth the
+        pattern-lesson:
+        - **Latent framing corruption on pipelined requests** (present
+          since step 4, in read_line originally): extract-a-line
+          memmove'd the *rest* of the buffer to the front while
+          returning a pointer to that same front — two requests
+          arriving in one recv() made the daemon parse the second
+          request twice and lose the first response entirely. Never
+          triggered before because every existing test did one
+          request per write, so `remaining` was always 0. Fixed by
+          making the framing buffer offset-based: data only moves in
+          fill() (when no extracted line is live), never in
+          extract_line(). Lesson: "works under the test suite's I/O
+          rhythm" is not "works" — the new
+          test_pipelined_requests_one_write covers the coalesced case.
+        - **Test harness deadlock on failure** (client.py): log()
+          read the daemon's stdout to EOF *before* stop() sent
+          SIGTERM, so any test failure where the daemon stayed healthy
+          hung the whole suite forever. Never seen before because
+          earlier failures were daemon *crashes* (EOF arrived). log()
+          now stops the daemon first.
+
+        tests/protocol/test_basic.py: 43/43 passing, including the
+        robustness matrix (unparseable/non-object/missing-id/
+        non-string-id/empty lines survive; oversized line closes;
+        second connection refused; state survives reconnect; slow
+        reader dropped via a 300ms `PJSOCKY_WRITE_TIMEOUT_MSEC`
+        override — tests can now pass per-test env via an `extra_env`
+        attribute on the test function).
 13. [~] `tests/protocol`: started early (during step 6) rather than
         deferred to the end, after ad-hoc manual verification missed two
         real bugs that an assert-based test caught immediately - see
         step 6's notes. `client.py` (harness: launches an isolated
         daemon via `PJSOCKY_SOCK_PATH`, NDJSON request/response + event
-        client) and `test_basic.py` (27 tests and growing - ping,
-        status.get, account.*, device.*, call.* incl. call.answer
-        error/gating paths, and im.send error/gating paths, plus the
-        async reg_state event path and the call_id bounds-check crash
-        fix from step 8/9) exist now; grows alongside each future
-        command/event instead of being written from scratch at the end.
+        client) and `test_basic.py` (43 tests and growing - ping,
+        status.get, account.* incl. account.remove, device.*, call.*
+        incl. call.answer error/gating paths, im.send/im.typing
+        error/gating paths, the async reg_state event path, the call_id
+        bounds-check crash fix from step 8/9, and step 12's robustness
+        matrix: malformed-input handling, second-connection refusal,
+        reconnect state survival, slow-reader disconnect, pipelined
+        requests) exist now; grows alongside each future command/event
+        instead of being written from scratch at the end.
         A real end-to-end call (dial-or-receive, answer, confirmed,
         hangup, incl. video) and a real im.send/message_status round
         trip are written but not runnable here

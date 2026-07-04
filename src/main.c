@@ -1,15 +1,16 @@
 /*
  * pjsocky - headless SIP audio/video call daemon.
  *
- * Build-order step 11 from CONTEXT.md: instant messaging (im.send,
- * incoming_message/message_status events, im.c). Accounts/devices/calls
- * (steps 6-10) came earlier.
+ * Build-order step 12 from CONTEXT.md: robustness pass (malformed input
+ * handling, second-connection refusal, write deadline, account.remove).
+ * Accounts/devices/calls/IM (steps 6-11) came earlier.
  *
  * Configuration is via environment variables, not a config file or CLI
  * flags - a deliberate choice (see CONTEXT.md's "Decide config file
  * format"), not a stopgap: PJSOCKY_SOCK_PATH (control socket path,
- * default /tmp/pjsocky.sock) and PJSOCKY_LOG_LEVEL (0-6, default
- * follows pjsua's own defaults).
+ * default /tmp/pjsocky.sock), PJSOCKY_LOG_LEVEL (0-6, default follows
+ * pjsua's own defaults) and PJSOCKY_WRITE_TIMEOUT_MSEC (control-socket
+ * write deadline, see below).
  */
 #include "account.h"
 #include "call.h"
@@ -36,6 +37,14 @@
  * CONTEXT.md's "Decide config file format" open question.
  */
 #define PJSOCKY_LOG_LEVEL_ENV       "PJSOCKY_LOG_LEVEL"
+
+/*
+ * Write deadline (milliseconds) for the control connection - see
+ * docs/PROTOCOL.md "Backpressure" and PJSOCKY_WRITE_TIMEOUT_DEFAULT_MSEC
+ * in proto/server.h. A client that stops reading past this deadline is
+ * declared dead and its connection dropped. Values <= 0 are ignored.
+ */
+#define PJSOCKY_WRITE_TIMEOUT_ENV   "PJSOCKY_WRITE_TIMEOUT_MSEC"
 
 /*
  * Test-only: pjsip's default non-INVITE transaction timeout (RFC 3261
@@ -191,11 +200,25 @@ int main(void)
 
     {
         const char *sock_path = getenv(PJSOCKY_SOCK_PATH_ENV);
+        const char *timeout_str = getenv(PJSOCKY_WRITE_TIMEOUT_ENV);
+        unsigned write_timeout_msec = PJSOCKY_WRITE_TIMEOUT_DEFAULT_MSEC;
 
         if (!sock_path)
             sock_path = PJSOCKY_SOCK_PATH_DEFAULT;
 
-        status = pjsocky_server_create(pool, sock_path, &srv);
+        if (timeout_str) {
+            long parsed = atol(timeout_str);
+
+            if (parsed > 0) {
+                write_timeout_msec = (unsigned)parsed;
+            } else {
+                PJ_LOG(2, (THIS_FILE, "Ignoring invalid %s='%s'",
+                           PJSOCKY_WRITE_TIMEOUT_ENV, timeout_str));
+            }
+        }
+
+        status = pjsocky_server_create(pool, sock_path, write_timeout_msec,
+                                        &srv);
     }
     if (status != PJ_SUCCESS) {
         pjsua_perror(THIS_FILE, "Error creating control socket", status);

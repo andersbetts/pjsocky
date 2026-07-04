@@ -16,7 +16,9 @@ costs roughly a daemon startup + shutdown per test (~1-2s each, see
 CONTEXT.md's build-order step 5 notes on shutdown latency) - fine for
 now; worth revisiting if this suite grows large enough for that to hurt.
 """
+import json
 import os
+import socket
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -293,6 +295,218 @@ def test_im_send_missing_params(c):
     assert resp["error"]["code"] == "invalid_params", resp
 
 
+def test_account_remove_lifecycle(c):
+    # configure -> remove -> configure again must work: account.remove
+    # exists exactly so the single v1 account slot can be reused.
+    resp = c.call("account.configure", {
+        "sip_uri": "sip:1000@127.0.0.1:1",
+        "registrar_uri": UNREACHABLE_REGISTRAR,
+        "username": "1000",
+        "password": "secret",
+    })
+    assert resp["ok"] is True, resp
+
+    resp = c.call("account.remove")
+    assert resp["ok"] is True, resp
+
+    resp = c.call("status.get")
+    assert resp["result"]["state"] == "idle", resp
+    assert resp["result"]["acc_id"] == -1, resp
+
+    resp = c.call("account.configure", {
+        "sip_uri": "sip:2000@127.0.0.1:1",
+        "registrar_uri": UNREACHABLE_REGISTRAR,
+        "username": "2000",
+        "password": "secret",
+    })
+    assert resp["ok"] is True, resp
+
+
+def test_account_remove_without_account_fails(c):
+    resp = c.call("account.remove")
+    assert resp["ok"] is False, resp
+    assert resp["error"]["code"] == "invalid_state", resp
+
+
+# --- Robustness: docs/PROTOCOL.md "Robustness" ------------------------
+#
+# A line the daemon can't answer with a response (no usable "id") gets
+# an `error` event instead, and - except for the oversized-line case -
+# the connection survives it.
+
+def _expect_bad_request_event_then_ping(c, raw_line):
+    c.sock.sendall(raw_line)
+    ev = c.read_event()
+    assert ev["event"] == "error", ev
+    assert ev["data"]["code"] == "bad_request", ev
+    # The connection survived: the next request works normally.
+    resp = c.call("ping")
+    assert resp["ok"] is True, resp
+
+
+def test_unparseable_json_survives(c):
+    _expect_bad_request_event_then_ping(c, b"this is not json\n")
+
+
+def test_non_object_json_survives(c):
+    _expect_bad_request_event_then_ping(c, b"[1,2,3]\n")
+
+
+def test_missing_id_survives(c):
+    _expect_bad_request_event_then_ping(c, b'{"cmd":"ping"}\n')
+
+
+def test_non_string_id_survives(c):
+    _expect_bad_request_event_then_ping(c, b'{"id":5,"cmd":"ping"}\n')
+
+
+def test_empty_line_survives(c):
+    _expect_bad_request_event_then_ping(c, b"\n")
+
+
+def test_pipelined_requests_one_write(c):
+    # Two complete requests arriving in a single TCP segment must both
+    # be answered, in order (the select-driven server drains every
+    # complete line after one read, not just the first).
+    c.sock.sendall(b'{"id":"a","cmd":"ping"}\n{"id":"b","cmd":"ping"}\n')
+    ra = c._recv_line()
+    rb = c._recv_line()
+    assert ra["id"] == "a" and ra["ok"] is True, ra
+    assert rb["id"] == "b" and rb["ok"] is True, rb
+
+
+def test_oversized_line_closes_connection(c):
+    # >8192 bytes with no newline: error event, then the daemon closes
+    # (framing can't be trusted mid-line - docs/PROTOCOL.md "Robustness").
+    c.sock.sendall(b"x" * 9000)
+    ev = c.read_event()
+    assert ev["event"] == "error", ev
+    assert ev["data"]["code"] == "bad_request", ev
+    try:
+        c._recv_line()
+        raise AssertionError("expected the daemon to close the connection")
+    except ConnectionError:
+        pass
+    # The daemon itself survived: a fresh connection works.
+    c2 = Client(SOCK_PATH)
+    try:
+        assert c2.call("ping")["ok"] is True
+    finally:
+        c2.close()
+
+
+def test_second_connection_refused(c):
+    # docs/PROTOCOL.md "Transport": second concurrent connection gets a
+    # single connection_refused error event (no hello) and is closed.
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect(SOCK_PATH)
+    try:
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(64)
+            if not chunk:
+                raise AssertionError(
+                    "connection closed before the refusal was sent")
+            buf += chunk
+        msg = json.loads(buf.decode())
+        assert msg.get("event") == "error", msg
+        assert msg["data"]["code"] == "connection_refused", msg
+        # ... and then closed.
+        assert s.recv(64) == b"", "expected EOF after the refusal"
+    finally:
+        s.close()
+    # The active connection was not disturbed.
+    resp = c.call("ping")
+    assert resp["ok"] is True, resp
+
+
+def test_state_survives_reconnect(c):
+    # docs/PROTOCOL.md "Robustness" ("Client disconnect"): control
+    # connection and SIP state are independent - a configured account
+    # survives the controlling client going away.
+    resp = c.call("account.configure", {
+        "sip_uri": "sip:1000@127.0.0.1:1",
+        "registrar_uri": UNREACHABLE_REGISTRAR,
+        "username": "1000",
+        "password": "secret",
+    })
+    acc_id = resp["result"]["acc_id"]
+    c.close()
+
+    c2 = Client(SOCK_PATH)  # fresh hello expected (consumed by Client)
+    try:
+        resp = c2.call("status.get")
+        assert resp["result"]["acc_id"] == acc_id, resp
+        assert resp["result"]["state"] != "idle", resp
+    finally:
+        c2.close()
+
+
+def test_slow_reader_gets_dropped(c):
+    # docs/PROTOCOL.md "Backpressure": a client that stops reading past
+    # the write deadline (shrunk to 300ms via extra_env below) is
+    # declared dead and dropped - the daemon must survive and accept a
+    # replacement connection. Spam requests without reading responses
+    # until both directions' socket buffers fill and the daemon's write
+    # deadline expires.
+    req = b'{"id":"x","cmd":"ping"}\n'
+    dropped = False
+    try:
+        for _ in range(200000):
+            c.sock.sendall(req)
+    except (BrokenPipeError, ConnectionResetError, socket.timeout):
+        dropped = True
+    assert dropped, "daemon never dropped a client that stopped reading"
+
+    # The daemon is still alive and serving.
+    c2 = Client(SOCK_PATH)
+    try:
+        assert c2.call("ping")["ok"] is True
+    finally:
+        c2.close()
+
+
+test_slow_reader_gets_dropped.extra_env = {"PJSOCKY_WRITE_TIMEOUT_MSEC": "300"}
+
+
+def test_im_typing_without_registration_fails(c):
+    c.call("account.configure", {
+        "sip_uri": "sip:1000@127.0.0.1:1",
+        "registrar_uri": UNREACHABLE_REGISTRAR,
+        "username": "1000",
+        "password": "secret",
+    })
+    # Deliberately not registering - same gate as im.send.
+    resp = c.call("im.typing", {"to": "sip:2000@127.0.0.1:1",
+                                "is_typing": True})
+    assert resp["ok"] is False, resp
+    assert resp["error"]["code"] == "invalid_state", resp
+
+
+def test_im_typing_with_no_account_fails(c):
+    resp = c.call("im.typing", {"to": "sip:2000@127.0.0.1:1",
+                                "is_typing": True})
+    assert resp["ok"] is False, resp
+    assert resp["error"]["code"] == "invalid_state", resp
+
+
+def test_im_typing_missing_params(c):
+    resp = c.call("im.typing", {"to": "sip:2000@127.0.0.1:1"})
+    assert resp["ok"] is False, resp
+    assert resp["error"]["code"] == "invalid_params", resp
+
+    resp = c.call("im.typing", {"is_typing": True})
+    assert resp["ok"] is False, resp
+    assert resp["error"]["code"] == "invalid_params", resp
+
+    # is_typing must be a JSON bool, not a string.
+    resp = c.call("im.typing", {"to": "sip:2000@127.0.0.1:1",
+                                "is_typing": "yes"})
+    assert resp["ok"] is False, resp
+    assert resp["error"]["code"] == "invalid_params", resp
+
+
 TESTS = [
     test_hello_on_connect,
     test_ping,
@@ -322,6 +536,21 @@ TESTS = [
     test_im_send_without_registration_fails,
     test_im_send_with_no_account_fails,
     test_im_send_missing_params,
+    test_account_remove_lifecycle,
+    test_account_remove_without_account_fails,
+    test_unparseable_json_survives,
+    test_non_object_json_survives,
+    test_missing_id_survives,
+    test_non_string_id_survives,
+    test_empty_line_survives,
+    test_pipelined_requests_one_write,
+    test_oversized_line_closes_connection,
+    test_second_connection_refused,
+    test_state_survives_reconnect,
+    test_slow_reader_gets_dropped,
+    test_im_typing_without_registration_fails,
+    test_im_typing_with_no_account_fails,
+    test_im_typing_missing_params,
 ]
 
 
@@ -339,7 +568,9 @@ def main():
         name = test_fn.__name__
         proc = PjsockyProcess(exe_path, SOCK_PATH)
         try:
-            proc.start()
+            # Tests can override daemon env (e.g. a short write deadline
+            # for the slow-reader test) via an `extra_env` attribute.
+            proc.start(extra_env=getattr(test_fn, "extra_env", None))
             client = Client(SOCK_PATH)
             try:
                 test_fn(client)

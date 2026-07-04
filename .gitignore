@@ -4,3 +4,6 @@
 # Out-of-source build directories
 /build/
 /build-*/
+
+# Python bytecode from tests/protocol
+__pycache__/

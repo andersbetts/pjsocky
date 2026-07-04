@@ -163,6 +163,16 @@ static pj_status_t cmd_account_unregister(pj_pool_t *pool,
     return pjsocky_account_unregister();
 }
 
+static pj_status_t cmd_account_remove(pj_pool_t *pool,
+                                       const pj_json_elem *params,
+                                       pj_json_elem *result)
+{
+    PJ_UNUSED_ARG(pool);
+    PJ_UNUSED_ARG(params);
+    PJ_UNUSED_ARG(result);
+    return pjsocky_account_remove();
+}
+
 static const char *vid_dir_str(pjmedia_dir dir)
 {
     switch (dir) {
@@ -468,6 +478,7 @@ static const cmd_entry CMD_TABLE[] = {
     { "account.configure", &cmd_account_configure },
     { "account.register", &cmd_account_register },
     { "account.unregister", &cmd_account_unregister },
+    { "account.remove", &cmd_account_remove },
     { "device.list_audio", &cmd_device_list_audio },
     { "device.list_video", &cmd_device_list_video },
     { "device.set_audio", &cmd_device_set_audio },

@@ -25,8 +25,10 @@ let the C implementation grow behavior that isn't described here first.
 - Optional (development builds only, off by default): TCP on loopback.
 - Exactly **one control connection** is accepted at a time. If a second
   client connects while one is active, the daemon sends it a single
-  `error` message with `code: "connection_refused"` and closes the
-  connection. It does not evict the existing client.
+  [`error` event](#error) with `code: "connection_refused"` (no `hello`
+  — its absence is itself the signal that this connection was never
+  usable) and closes the connection. It does not evict the existing
+  client.
 - The daemon does not require authentication at the transport layer in
   v1 — the socket's filesystem permissions (or loopback-only binding) are
   the trust boundary. This is a deliberate v1 scope limit, see
@@ -127,18 +129,78 @@ else, with no request required:
 
 ## Backpressure
 
-If the daemon's outgoing socket buffer for events is full because the
-client isn't reading, the daemon drops the *oldest* queued event first
-(events are not guaranteed delivery) rather than blocking the pjsua
-callback thread. A client that needs a reliable snapshot after a gap
-should call `status.get` / `call.get_info`, which always reflect current
-state regardless of any events missed.
+All writes to the control socket (responses and events alike) share one
+bounded write deadline (default 5000 ms; a daemon startup option, env
+var `PJSOCKY_WRITE_TIMEOUT_MSEC`). If the client stops reading and the
+socket buffer stays full past the deadline, the daemon declares the
+client dead and drops the control connection — SIP processing
+(including an active call, see [Robustness](#robustness)) is never
+blocked indefinitely by a stalled controller.
+
+Consequently events are not guaranteed delivery. A client that
+reconnects after being dropped must resync by calling `status.get` /
+`call.get_info`, which always reflect current state regardless of any
+events missed.
+
+(An earlier draft promised drop-oldest event queueing here, which was
+never implemented. Replaced deliberately: a controller that stops
+reading for seconds is broken, and silently dropping arbitrary events
+would make recovery harder to reason about, not easier — dropping the
+connection is detectable and forces an explicit resync.)
+
+## Robustness
+
+### Malformed input
+
+How the daemon handles a request line it cannot answer with a normal
+response:
+
+| Input                                                               | Behavior |
+|---------------------------------------------------------------------|----------|
+| Valid JSON object with a string `id`, but `cmd` missing / unknown / `params` invalid | Normal error **response** (`bad_request` / `unknown_command` / `invalid_params`) — connection unaffected |
+| Unparseable JSON, or valid JSON that isn't an object, or `id` missing / not a string | `error` **event** with `code: "bad_request"`; the connection stays open. Line framing is still intact, so the next line is parsed independently — one garbage line does not poison the session |
+| Line longer than 8192 bytes (including an unterminated flood)       | `error` event with `code: "bad_request"`, then the daemon closes the connection. Framing can no longer be trusted: the remainder of the oversized line would otherwise be misread as new messages |
+| Empty line                                                          | Same as unparseable JSON (`error` event, connection stays open) |
+
+### Client disconnect (including mid-call)
+
+The control connection and SIP state are deliberately independent: when
+the control connection is lost — client crash, orderly close, or
+dropped by the write deadline above — the daemon keeps running with all
+SIP state intact. An active call stays up; a registration stays
+registered; a configured account stays configured. Events that fire
+while no client is connected are discarded.
+
+Rationale: pjsocky's targets are unattended installations; a controller
+crash must never tear down an in-progress call. A deployment that wants
+"hang up when the controller dies" implements that in the controller's
+supervisor on restart (`call.hangup_all` after resync).
+
+On reconnect the client receives a fresh `hello` and must resync via
+`status.get` (plus `call.get_info` if a call exists) rather than assume
+it saw every event.
+
+### Command timeouts
+
+There are none, by design: every command is non-blocking. pjsua-lib's
+call/registration/IM APIs return once the request is queued for SIP
+processing, and outcomes arrive as events — no command's response waits
+on the network. A client should still apply its own read timeout as
+basic hygiene.
+
+### pjsua callback errors
+
+A failure to serialize or write an event (client gone mid-write, write
+deadline hit) is logged and otherwise ignored: pjsua callbacks always
+return normally, so SIP processing is never disturbed by control-plane
+trouble. The daemon never exits because of a control-connection
+problem; it exits only on SIGINT/SIGTERM or a fatal startup error.
 
 ## Errors
 
 | `code`                 | Meaning                                                        |
 |------------------------|------------------------------------------------------------------|
-| `bad_request`          | Malformed JSON, missing `cmd`, wrong param types                |
+| `bad_request`          | Missing/invalid `cmd` (as a response); unparseable JSON or unusable `id` (as an `error` event — see [Robustness](#robustness)) |
 | `unknown_command`      | `cmd` not recognized                                             |
 | `invalid_params`       | `cmd` recognized, `params` fail validation for that command      |
 | `invalid_state`        | Command not valid in current daemon/account/call state           |
@@ -337,6 +399,22 @@ CALLING | INCOMING | EARLY | CONNECTING | CONFIRMED | DISCONNECTED`).
 Sent once, immediately on connect, before any response. See
 [Versioning](#versioning).
 
+### `error`
+```json
+{"event": "error", "data": {"code": "bad_request", "message": "not valid JSON"}}
+```
+A daemon-side problem that cannot be expressed as a response because
+there is no valid request `id` to correlate it with. `code` comes from
+the same table as response errors ([Errors](#errors)); `message` is
+human-readable and not stable. Two producers in v1:
+
+- `bad_request` — the preceding line was unparseable or had no usable
+  `id`; see [Robustness](#robustness) for whether the connection
+  survives.
+- `connection_refused` — sent as the only message on a second
+  concurrent connection, which is then closed; see
+  [Transport](#transport).
+
 ### `reg_state`
 ```json
 {"event": "reg_state", "data": {"acc_id": 0, "status": 200, "status_text": "OK", "registered": true}}
@@ -465,7 +543,8 @@ first:
 - [ ] Does the control socket need any authentication beyond filesystem
       permissions, given tp4/tp7's threat model? Revisit before exposing
       the TCP transport option outside development builds.
-- [ ] Reconnect behavior: if the controlling client drops mid-call, does
+- [x] Reconnect behavior: if the controlling client drops mid-call, does
       the call continue and simply become uncontrollable until a client
       reconnects (current assumption), or should the daemon hang up
-      calls when the control connection is lost?
+      calls when the control connection is lost? — resolved: the call
+      continues; see [Robustness](#robustness) ("Client disconnect").

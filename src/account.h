@@ -42,6 +42,14 @@ pj_status_t pjsocky_account_register(void);
 pj_status_t pjsocky_account_unregister(void);
 
 /*
+ * Delete the (only, v1) account so account.configure can be called
+ * again. Returns PJ_EINVALIDOP if no account is configured or if it is
+ * currently registered (docs/PROTOCOL.md "account.remove":
+ * account.unregister first).
+ */
+pj_status_t pjsocky_account_remove(void);
+
+/*
  * Callback to assign to pjsua_config.cb.on_reg_state2 before
  * pjsua_init(). Pushes a "reg_state" event (docs/PROTOCOL.md) via
  * proto/events.c.
