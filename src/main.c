@@ -14,6 +14,7 @@
  */
 #include "account.h"
 #include "call.h"
+#include "device.h"
 #include "im.h"
 #include "proto/events.h"
 #include "proto/server.h"
@@ -166,6 +167,17 @@ int main(void)
     status = pjsua_init(&ua_cfg, &log_cfg, &media_cfg);
     if (status != PJ_SUCCESS) {
         pjsua_perror(THIS_FILE, "Error initializing pjsua", status);
+        pjsua_destroy();
+        return 1;
+    }
+
+    /* See device.h/null_video_dev.c: this hardware has no real video
+     * display, so pjsua's own video pipeline (incoming-video decode, and
+     * even local capture preview for a send-only stream) would otherwise
+     * fail with PJMEDIA_EVID_NODEFDEV the moment any call's video comes up. */
+    status = pjmedia_vid_register_factory(&pjsocky_null_vid_factory, NULL);
+    if (status != PJ_SUCCESS) {
+        pjsua_perror(THIS_FILE, "Error registering null video render device", status);
         pjsua_destroy();
         return 1;
     }

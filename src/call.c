@@ -100,8 +100,22 @@ pj_status_t pjsocky_call_dial(const pj_str_t *uri, pj_bool_t video,
         return PJ_EINVALIDOP;
 
     pjsua_call_setting_default(&setting);
-    if (!video)
+    if (!video) {
         setting.vid_cnt = 0;
+    } else {
+        /* This hardware has no video render device at all (see device.c /
+         * account.c's vid_cap_dev comments -- device.list_video only ever
+         * enumerates capture-direction devices). Negotiating the default
+         * sendrecv leaves pjsua trying to create an RX render window when
+         * the call's video stream comes up, which fails outright with
+         * PJMEDIA_EVID_NODEFDEV and tears the whole video stream down --
+         * because there is nothing to display incoming video *on* here,
+         * unlike a phone/softphone UI. Restrict to send-only so pjsua never
+         * needs a render device: media_dir[0] is audio, [1] is video, per
+         * pjsua_call_setting_default()'s indexing. */
+        setting.flag |= PJSUA_CALL_SET_MEDIA_DIR;
+        setting.media_dir[1] = PJMEDIA_DIR_ENCODING;
+    }
 
     /* pjsua_call_make_call() duplicates *uri into its own pool before
      * returning, same as pjsua_acc_add() - see account.c's comment on
@@ -165,8 +179,14 @@ pj_status_t pjsocky_call_answer(pjsua_call_id call_id, unsigned code,
         return PJ_EINVAL;
 
     pjsua_call_setting_default(&setting);
-    if (!video)
+    if (!video) {
         setting.vid_cnt = 0;
+    } else {
+        /* See the matching comment in pjsocky_call_dial(): no render device
+         * exists on this hardware, so answer send-only too. */
+        setting.flag |= PJSUA_CALL_SET_MEDIA_DIR;
+        setting.media_dir[1] = PJMEDIA_DIR_ENCODING;
+    }
 
     return pjsua_call_answer2(call_id, &setting, code, NULL, NULL);
 }
@@ -295,6 +315,46 @@ static void apply_video_capture_device(pjsua_call_id call_id,
     }
 }
 
+/*
+ * pjsua-lib never connects a call's conference-bridge audio port to the
+ * sound device's port (slot 0) on its own -- that's application
+ * responsibility. The pjsua CLI demo app does it in its own
+ * on_call_media_state handling (pjsip-apps/src/pjsua/pjsua_app.c), but
+ * pjsocky is a from-scratch pjsua-lib application, not derived from that
+ * demo app, and never picked up this step. Without it, a call can reach
+ * PJSUA_CALL_MEDIA_ACTIVE with real RTP flowing (has_audio:true in the
+ * call_media_state event) while nothing actually reaches the speaker/mic:
+ * the call's port and the sound device's port just sit unconnected in the
+ * conference bridge. Connect them both ways, mirroring the demo app.
+ * pjsua_conf_connect() is idempotent for an already-connected pair, so this
+ * is safe to call again on media renegotiation.
+ */
+static void connect_call_audio_to_sound_dev(const pjsua_call_info *info)
+{
+    unsigned i;
+
+    for (i = 0; i < info->media_cnt; i++) {
+        pjsua_conf_port_id call_slot;
+        pj_status_t status;
+
+        if (info->media[i].type != PJMEDIA_TYPE_AUDIO ||
+            info->media[i].status != PJSUA_CALL_MEDIA_ACTIVE)
+            continue;
+
+        call_slot = info->media[i].stream.aud.conf_slot;
+
+        status = pjsua_conf_connect(call_slot, 0);
+        if (status != PJ_SUCCESS)
+            PJ_PERROR(1, (THIS_FILE, status,
+                          "pjsua_conf_connect(call->sound_dev) failed"));
+
+        status = pjsua_conf_connect(0, call_slot);
+        if (status != PJ_SUCCESS)
+            PJ_PERROR(1, (THIS_FILE, status,
+                          "pjsua_conf_connect(sound_dev->call) failed"));
+    }
+}
+
 void pjsocky_call_on_call_media_state(pjsua_call_id call_id)
 {
     pjsua_call_info info;
@@ -307,6 +367,7 @@ void pjsocky_call_on_call_media_state(pjsua_call_id call_id)
     }
 
     apply_video_capture_device(call_id, &info);
+    connect_call_audio_to_sound_dev(&info);
 
     pjsocky_events_push(pjsocky_events_instance(), "call_media_state",
                          &build_call_media_state_data, &info);

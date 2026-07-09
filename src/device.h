@@ -47,6 +47,15 @@ pj_status_t pjsocky_device_set_audio(int capture_id, int playback_id);
 void pjsocky_device_set_video_capture(pjmedia_vid_dev_index capture_id);
 pjmedia_vid_dev_index pjsocky_device_get_video_capture(void);
 
+/*
+ * Mock video render device (see null_video_dev.c): registered at startup via
+ * pjmedia_vid_register_factory() so pjsua-lib's video pipeline always has a
+ * render-capable device to resolve to, on hardware (like this one) with no
+ * real video display -- without it, both incoming-video decode and even
+ * local capture preview fail outright with PJMEDIA_EVID_NODEFDEV.
+ */
+pjmedia_vid_dev_factory *pjsocky_null_vid_factory(pj_pool_factory *pf);
+
 PJ_END_DECL
 
 #endif /* PJSOCKY_DEVICE_H */

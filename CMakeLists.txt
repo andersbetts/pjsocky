@@ -142,6 +142,7 @@ add_executable(pjsocky
   src/account.c
   src/call.c
   src/device.c
+  src/null_video_dev.c
   src/im.c
   src/proto/framing.c
   src/proto/jsonutil.c

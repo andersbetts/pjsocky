@@ -1,5 +1,6 @@
 #include "account.h"
 
+#include "device.h"
 #include "proto/events.h"
 #include "proto/jsonutil.h"
 
@@ -7,6 +8,32 @@
 #include <pj/log.h>
 
 #define THIS_FILE "account.c"
+
+/* pjsua-lib resolves PJMEDIA_VID_DEFAULT_CAPTURE_DEV (-1, pjsua_acc_config's
+ * own default for vid_cap_dev) at call setup time -- but on hardware with no
+ * OS-level "default" video device (as here: three named devices, none
+ * flagged default), that resolution fails outright with
+ * PJMEDIA_EVID_NODEFDEV and pjsua-lib tears the whole video stream down
+ * before call.c's apply_video_capture_device() ever gets a chance to pick a
+ * real one. Always resolve to a concrete device up front so an account is
+ * never left pointing at that unresolvable sentinel; device.set_video
+ * (pjsocky_device_set_video_capture()) overrides this both here (if it ran
+ * before account.configure) and live on an existing account (see its own
+ * comment in device.c). */
+static pjmedia_vid_dev_index resolve_default_vid_cap_dev(void)
+{
+    pjmedia_vid_dev_index cap_dev = pjsocky_device_get_video_capture();
+    pjmedia_vid_dev_info devices[PJSOCKY_MAX_DEVICES];
+    unsigned count = PJSOCKY_MAX_DEVICES;
+
+    if (cap_dev != PJMEDIA_VID_INVALID_DEV)
+        return cap_dev;
+
+    if (pjsocky_device_list_video(devices, &count) == PJ_SUCCESS && count > 0)
+        return devices[0].id;
+
+    return PJMEDIA_VID_INVALID_DEV; /* no video device on this system at all */
+}
 
 /* v1 supports exactly one account - see CONTEXT.md. */
 static pjsua_acc_id g_acc_id = PJSUA_INVALID_ID;
@@ -52,6 +79,20 @@ pj_status_t pjsocky_account_configure(const pj_str_t *sip_uri,
     acc_cfg.id = *sip_uri;
     acc_cfg.reg_uri = *registrar_uri;
     acc_cfg.register_on_acc_add = PJ_FALSE;
+
+    /* Both default to PJ_FALSE in pjsua-lib: without vid_out_auto_transmit,
+     * pjsua_vid.c never connects the capture device to the outgoing
+     * stream's encoder (that wiring -- setup_vid_capture()'s
+     * pjsua_vid_conf_connect() -- is gated on this flag), so a call can
+     * negotiate video and reach PJSUA_CALL_MEDIA_ACTIVE with nothing ever
+     * actually transmitted, the same class of bug the audio side had
+     * before pjsocky_call_on_call_media_state() started connecting the
+     * audio conference ports itself. vid_in_auto_show is the RX-side
+     * equivalent (show incoming video without the client having to ask). */
+    acc_cfg.vid_in_auto_show = PJ_TRUE;
+    acc_cfg.vid_out_auto_transmit = PJ_TRUE;
+    acc_cfg.vid_cap_dev = resolve_default_vid_cap_dev();
+
     acc_cfg.cred_count = 1;
     acc_cfg.cred_info[0].realm = *realm;
     acc_cfg.cred_info[0].scheme = pj_str("digest");
