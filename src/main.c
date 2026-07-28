@@ -156,6 +156,32 @@ int main(void)
         }
     }
 
+    /* pjsua_config_default() bzeroes user_agent, and pjsua_core.c only adds the
+     * User-Agent header when it is non-empty - so taking the library default means
+     * sending INVITEs and REGISTERs with no User-Agent at all. The pjsua demo app
+     * always sets one (pjsua_app_config.c), and RFC 3261 makes the header optional,
+     * but plenty of endpoints assume it is present when they build a call record or
+     * a UI string, which is a poor thing to find out from someone else's crash.
+     * Same shape as the txt_cnt default in call.c: a pjsua-lib default is not
+     * pjsua-app behaviour.
+     *
+     * pj_get_sys_info() can contain slashes, which RFC 3261 does not allow here, so
+     * they are replaced - mirroring the demo app.
+     */
+    {
+        static char ua[128];
+        unsigned i;
+
+        pj_ansi_snprintf(ua, sizeof(ua), "pjsocky/%s (PJSUA/v%s %s)",
+                         PJSOCKY_VERSION, pj_get_version(),
+                         pj_get_sys_info()->info.ptr);
+        for (i = 0; ua[i]; i++) {
+            if (ua[i] == '/' && i > sizeof("pjsocky/") + 1)
+                ua[i] = ' ';
+        }
+        ua_cfg.user_agent = pj_str(ua);
+    }
+
     ua_cfg.cb.on_reg_state2 = &pjsocky_account_on_reg_state2;
     ua_cfg.cb.on_call_state = &pjsocky_call_on_call_state;
     ua_cfg.cb.on_call_media_state = &pjsocky_call_on_call_media_state;

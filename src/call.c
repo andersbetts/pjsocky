@@ -100,22 +100,38 @@ pj_status_t pjsocky_call_dial(const pj_str_t *uri, pj_bool_t video,
         return PJ_EINVALIDOP;
 
     pjsua_call_setting_default(&setting);
+
+    /* pjsua_call_setting_default() sets txt_cnt = 1, so the library default puts a T.140
+     * real-time text stream in every offer. The pjsua demo app never ships that: it keeps
+     * its own app_config.txt_cnt (zero unless --text is passed) and overwrites the library
+     * default on every call and answer. pjsocky, being a from-scratch pjsua-lib
+     * application, took the default and offered
+     *     m=text 4004 RTP/AVP 100 98
+     *     a=rtpmap:100 red/1000
+     *     a=rtpmap:98 t140/1000
+     * on every call. Nothing in this system wants it - the far end answers it with port 0 -
+     * and an unexpected third m-line with a 1000Hz clock rate is exactly the kind of thing a
+     * fragile endpoint mishandles. Match pjsua and leave it off; set this to 1 (and add a
+     * config knob, like pjsua's --text) if real-time text is ever actually wanted.
+     */
+    setting.txt_cnt = 0;
     if (!video) {
         setting.vid_cnt = 0;
-    } else {
-        /* This hardware has no video render device at all (see device.c /
-         * account.c's vid_cap_dev comments -- device.list_video only ever
-         * enumerates capture-direction devices). Negotiating the default
-         * sendrecv leaves pjsua trying to create an RX render window when
-         * the call's video stream comes up, which fails outright with
-         * PJMEDIA_EVID_NODEFDEV and tears the whole video stream down --
-         * because there is nothing to display incoming video *on* here,
-         * unlike a phone/softphone UI. Restrict to send-only so pjsua never
-         * needs a render device: media_dir[0] is audio, [1] is video, per
-         * pjsua_call_setting_default()'s indexing. */
-        setting.flag |= PJSUA_CALL_SET_MEDIA_DIR;
-        setting.media_dir[1] = PJMEDIA_DIR_ENCODING;
     }
+
+    /* Video is offered sendrecv, exactly as pjsua does. This used to be forced to
+     * send-only (PJSUA_CALL_SET_MEDIA_DIR + media_dir[1] = PJMEDIA_DIR_ENCODING)
+     * because this hardware has no video render device and pjsua would fail an
+     * incoming video stream with PJMEDIA_EVID_NODEFDEV. That is already solved,
+     * and better, by the null render device registered in main.c
+     * (null_video_dev.c provides exactly one PJMEDIA_DIR_RENDER device), so the
+     * direction override was doing the same job twice.
+     *
+     * It was not harmless: "a=sendonly" on the video m-line was the only thing
+     * left distinguishing pjsocky's INVITE from pjsua's - 24 of 25 SDP lines were
+     * byte-identical - and a remote endpoint that cannot cope with a receive-only
+     * video offer sees it while ringing, before anyone answers.
+     */
 
     /* pjsua_call_make_call() duplicates *uri into its own pool before
      * returning, same as pjsua_acc_add() - see account.c's comment on
@@ -179,14 +195,15 @@ pj_status_t pjsocky_call_answer(pjsua_call_id call_id, unsigned code,
         return PJ_EINVAL;
 
     pjsua_call_setting_default(&setting);
+
+    /* No text stream on answers either - see pjsocky_call_dial(). */
+    setting.txt_cnt = 0;
+
     if (!video) {
         setting.vid_cnt = 0;
-    } else {
-        /* See the matching comment in pjsocky_call_dial(): no render device
-         * exists on this hardware, so answer send-only too. */
-        setting.flag |= PJSUA_CALL_SET_MEDIA_DIR;
-        setting.media_dir[1] = PJMEDIA_DIR_ENCODING;
     }
+
+    /* Answers are sendrecv too - see pjsocky_call_dial(). */
 
     return pjsua_call_answer2(call_id, &setting, code, NULL, NULL);
 }
