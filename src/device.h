@@ -33,8 +33,12 @@ pj_status_t pjsocky_device_list_video(pjmedia_vid_dev_info devices[],
                                        unsigned *p_count);
 
 /*
- * Wraps pjsua_set_snd_dev(). Takes effect on the currently open sound
- * device / the next call, per docs/PROTOCOL.md "device.set_audio".
+ * Selects the devices call audio will use, per docs/PROTOCOL.md
+ * "device.set_audio". Does not open them: outside a call the selection is
+ * only recorded, and the hardware is opened when a call's media connects
+ * and closed again shortly after it ends. During a call it switches the
+ * open device, as before. See the comment on the implementation for why
+ * selecting used to open the device and what that cost.
  */
 pj_status_t pjsocky_device_set_audio(int capture_id, int playback_id);
 

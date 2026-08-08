@@ -22,9 +22,51 @@ pj_status_t pjsocky_device_list_video(pjmedia_vid_dev_info devices[],
     return pjsua_vid_enum_devs(devices, p_count);
 }
 
+/*
+ * Select the devices call audio will use, without opening them.
+ *
+ * pjsua_set_snd_dev() opens the hardware there and then, and pjsua only
+ * arms its auto-close timer when a call tears down - so a selection made
+ * while idle left ALSA capture and playback streams running with nothing
+ * connected to them in the conference bridge. Observed on a TP4: the
+ * controlling application selects devices at registration time, no call
+ * ever follows, and pjmedia's delay buffers underflow at ~50 Hz forever,
+ * each one a log line. That is 93% of the device's log volume, evicting
+ * everything else from a RAM-backed journal within minutes, plus a
+ * capture stream held open against a camera mic that is not being used.
+ *
+ * PJSUA_SND_DEV_NO_IMMEDIATE_OPEN records the selection and leaves the
+ * hardware alone; the conference bridge opens it when a call's media
+ * actually connects (pjsua_aud.c, conf connect path), and the existing
+ * snd_auto_close_time closes it a second after the call ends. So the
+ * device is open exactly while there is audio to carry.
+ *
+ * The flag only defers when the device is currently closed - pjsua takes
+ * the early-return in pjsua_set_snd_dev2() on !snd_is_on. If a selection
+ * arrives while the device is open, that is either mid-call (where
+ * switching immediately is the wanted behaviour) or a leftover open
+ * device with no call, which is the very state this exists to end. Hence
+ * the explicit close in the second case, via the only public API that
+ * does it - and set_snd_dev2() clears the "no sound" flag that leaves
+ * behind, so the next call still opens real hardware rather than
+ * silently getting null audio.
+ */
 pj_status_t pjsocky_device_set_audio(int capture_id, int playback_id)
 {
-    return pjsua_set_snd_dev(capture_id, playback_id);
+    pjsua_snd_dev_param param;
+
+    if (pjsua_snd_is_active() && pjsua_call_get_count() == 0) {
+        PJ_LOG(4, (THIS_FILE, "set_audio: closing idle sound device before "
+                   "selecting capture=%d playback=%d", capture_id, playback_id));
+        pjsua_set_no_snd_dev();
+    }
+
+    pjsua_snd_dev_param_default(&param);
+    param.capture_dev = capture_id;
+    param.playback_dev = playback_id;
+    param.mode = PJSUA_SND_DEV_NO_IMMEDIATE_OPEN;
+
+    return pjsua_set_snd_dev2(&param);
 }
 
 /* v1 handles one active call at a time (see CONTEXT.md), so one

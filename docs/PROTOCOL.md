@@ -270,9 +270,16 @@ Wraps `pjsua_vid_enum_devs()` / `pjmedia_vid_dev_info` (`id`, `name`,
 ### `device.set_audio`
 
 Params: `{"capture_id": 0, "playback_id": 0}` (both required, integers as
-returned by `device.list_audio`). Wraps `pjsua_set_snd_dev`. Result: `{}`.
-Valid in any daemon state; takes effect on the currently open sound
-device / next call.
+returned by `device.list_audio`). Wraps `pjsua_set_snd_dev2` with
+`PJSUA_SND_DEV_NO_IMMEDIATE_OPEN`. Result: `{}`. Valid in any daemon state.
+
+**Selecting a device does not open it.** Outside a call the choice is only
+recorded; the hardware is opened when a call's media connects and closed
+again about a second after the call ends, so it is open exactly while there
+is audio to carry. During a call the switch takes effect immediately, as
+before. Selecting while a device is open with no call in progress closes it
+first — that state used to persist indefinitely and produce continuous
+`Underflow` logging from pjmedia's delay buffers.
 
 ### `device.set_video`
 
