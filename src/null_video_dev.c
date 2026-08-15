@@ -192,6 +192,18 @@ static pj_status_t factory_create_stream(pjmedia_vid_dev_factory *f,
     PJ_UNUSED_ARG(user_data);
     PJ_ASSERT_RETURN(f && param && p_vid_strm, PJ_EINVAL);
 
+    /* Render only, and say so. pjmedia_vid_port_create() passes the direction
+     * it was asked for straight through without checking it against the
+     * device's own dir, so a capture-direction request lands here -- and this
+     * device has no get_frame at all. Accepting it would build a capture port
+     * that never yields a frame: the call negotiates video, reports its media
+     * active, and transmits nothing, with no error anywhere to explain it. */
+    if (param->dir != PJMEDIA_DIR_RENDER) {
+        PJ_LOG(1, (THIS_FILE, "Null renderer asked for direction %d; it can "
+                   "only render", (int)param->dir));
+        return PJMEDIA_EVID_INVDEV;
+    }
+
     pool = pj_pool_create(nf->pf, "null-vid-render-strm", 512, 512, NULL);
     PJ_ASSERT_RETURN(pool != NULL, PJ_ENOMEM);
 

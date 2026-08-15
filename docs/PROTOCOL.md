@@ -294,6 +294,16 @@ subsequent `call.dial`/`call.answer` calls with `video:true`. Does not
 itself open the device (rendering/capture opens at call media setup, per
 `on_call_media_state`). Result: `{}`.
 
+`capture_id` must name a device whose `device.list_video` `dir` includes
+`capture`; anything else is rejected. The list also contains render-only
+devices — on hardware with no display it always contains at least the
+daemon's own null renderer — and selecting one of those is not a harmless
+mistake: pjsua opens it in the capture direction regardless, never gets a
+frame out of it, and the call then negotiates video, reports
+`call_media_state` with `has_video: true`, and transmits nothing. A client
+picking a device out of the list should filter on `dir` rather than rely on
+this check.
+
 ### `account.configure`
 
 Params:

@@ -73,8 +73,37 @@ pj_status_t pjsocky_device_set_audio(int capture_id, int playback_id)
  * selected video capture device is enough. */
 static pjmedia_vid_dev_index g_video_capture_id = PJMEDIA_VID_INVALID_DEV;
 
-void pjsocky_device_set_video_capture(pjmedia_vid_dev_index capture_id)
+pj_status_t pjsocky_device_set_video_capture(pjmedia_vid_dev_index capture_id)
 {
+    pjmedia_vid_dev_info info;
+    pj_status_t status;
+
+    /* Refuse anything that cannot capture - see device.h. pjsua does not
+     * check: pjmedia_vid_port_create() opens whatever id it is handed in
+     * whichever direction it was asked for, so a render-only device (the
+     * null renderer in null_video_dev.c is one, and it enumerates alongside
+     * the real cameras) is accepted, produces no frames, and the far end
+     * sees a video stream that never carries a picture. Failing the command
+     * makes the controlling application's device pick the thing that gets
+     * corrected, rather than a silent black call. */
+    status = pjmedia_vid_dev_get_info(capture_id, &info);
+    if (status != PJ_SUCCESS) {
+        PJ_PERROR(1, (THIS_FILE, status,
+                      "set_video_capture: no video device with id %d",
+                      capture_id));
+        /* PJ_EINVAL, not the pjmedia status: both of these are a bad
+         * capture_id from the client, which the protocol reports as
+         * invalid_params (see error_code_for() in proto/dispatch.c). */
+        return PJ_EINVAL;
+    }
+
+    if ((info.dir & PJMEDIA_DIR_CAPTURE) == 0) {
+        PJ_LOG(1, (THIS_FILE, "set_video_capture: device %d (\"%s\", driver "
+                   "\"%s\") cannot capture - refusing to select it",
+                   capture_id, info.name, info.driver));
+        return PJ_EINVAL;
+    }
+
     g_video_capture_id = capture_id;
 
     /* Live-update the already-configured account's default capture device
@@ -117,6 +146,8 @@ void pjsocky_device_set_video_capture(pjmedia_vid_dev_index capture_id)
             pj_pool_release(pool);
         }
     }
+
+    return PJ_SUCCESS;
 }
 
 pjmedia_vid_dev_index pjsocky_device_get_video_capture(void)

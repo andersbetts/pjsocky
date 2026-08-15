@@ -200,6 +200,20 @@ def test_device_set_video(c):
     assert resp["result"] == {}, resp
 
 
+def test_device_set_video_rejects_render_only(c):
+    """A render-only device is not a camera, and selecting one used to be
+    accepted silently: pjsua opens it in the capture direction anyway, never
+    gets a frame, and the call then negotiates video and sends nothing. The
+    daemon always registers its own null renderer, so there is one to try."""
+    devices = c.call("device.list_video")["result"]["devices"]
+    render_only = [d for d in devices if d["dir"] == "render"]
+    assert render_only, "expected the daemon's own null render device"
+
+    resp = c.call("device.set_video", {"capture_id": render_only[0]["id"]})
+    assert resp["ok"] is False, resp
+    assert resp["error"]["code"] == "invalid_params", resp
+
+
 # No SIP server is available in this environment (checked - only a SIP
 # *library*, sofia-sip, is installed, not a server/registrar), so a real
 # call can't be placed end to end here yet. These tests cover what's
@@ -564,6 +578,7 @@ TESTS = [
     test_device_set_audio,
     test_device_set_audio_missing_param,
     test_device_set_video,
+    test_device_set_video_rejects_render_only,
     test_dial_without_registration_fails,
     test_dial_with_no_account_fails,
     test_dial_missing_uri,

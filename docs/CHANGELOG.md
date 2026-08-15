@@ -46,6 +46,17 @@ Initial release. Everything is new:
   stream. `has_video` says a stream was negotiated; these say whether
   anything is travelling through it, which is the difference between a
   capture/encode fault on this side and a problem at the far end.
+- `device.set_video` rejects a `capture_id` that is not a capture
+  device, and the account's own fallback pick (used when no
+  `device.set_video` arrived) skips render-only devices rather than
+  taking the first device enumerated. The null render device likewise
+  refuses a capture-direction stream instead of creating one it can
+  never produce a frame from. All three are the same failure: pjsua
+  opens whatever device id it is handed in whichever direction it was
+  asked for, so a render-only pick made a call negotiate video, report
+  media active, and send no picture at all — with nothing logged to say
+  why. Reachable whenever the camera is missing from the enumeration,
+  which the v4l2 factory performs once at startup.
 - systemd packaging (packaging/), protocol test suite
   (tests/protocol/), automated live-call verification against a
   dockerized Asterisk (tests/asterisk/).

@@ -296,8 +296,7 @@ static pj_status_t cmd_device_set_video(pj_pool_t *pool,
     if (get_int_member(params, "capture_id", &capture_id) != PJ_SUCCESS)
         return PJ_EINVAL;
 
-    pjsocky_device_set_video_capture(capture_id);
-    return PJ_SUCCESS;
+    return pjsocky_device_set_video_capture(capture_id);
 }
 
 static pj_status_t cmd_call_dial(pj_pool_t *pool,

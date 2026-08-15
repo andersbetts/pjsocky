@@ -25,14 +25,29 @@ static pjmedia_vid_dev_index resolve_default_vid_cap_dev(void)
     pjmedia_vid_dev_index cap_dev = pjsocky_device_get_video_capture();
     pjmedia_vid_dev_info devices[PJSOCKY_MAX_DEVICES];
     unsigned count = PJSOCKY_MAX_DEVICES;
+    unsigned i;
 
     if (cap_dev != PJMEDIA_VID_INVALID_DEV)
         return cap_dev;
 
-    if (pjsocky_device_list_video(devices, &count) == PJ_SUCCESS && count > 0)
-        return devices[0].id;
+    if (pjsocky_device_list_video(devices, &count) != PJ_SUCCESS)
+        return PJMEDIA_VID_INVALID_DEV;
 
-    return PJMEDIA_VID_INVALID_DEV; /* no video device on this system at all */
+    /* The first device that can actually capture, not simply the first
+     * device. The enumeration carries render-only devices too -- the null
+     * renderer registered in main.c is one -- and pjsua will happily open a
+     * render-only device in the capture direction and then never produce a
+     * frame from it, so picking one here costs the call its outgoing video
+     * without failing anything. That is only reachable when the camera is
+     * missing from the enumeration (unplugged, or attached after pjsocky
+     * started, since the v4l2 factory enumerates once), which is exactly
+     * when the difference matters. */
+    for (i = 0; i < count; i++) {
+        if (devices[i].dir & PJMEDIA_DIR_CAPTURE)
+            return devices[i].id;
+    }
+
+    return PJMEDIA_VID_INVALID_DEV; /* no capture device on this system */
 }
 
 /* v1 supports exactly one account - see CONTEXT.md. */
