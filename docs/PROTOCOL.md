@@ -415,11 +415,25 @@ Result:
   "remote_info": "\"Alice\" <sip:100@example.com>",
   "has_audio": true,
   "has_video": false,
-  "connect_duration_sec": 42
+  "connect_duration_sec": 42,
+  "audio_tx_packets": 2100,
+  "audio_rx_packets": 2098
 }
 ```
 `state` is the string name of the `pjsip_inv_state` enum value (`NULL |
 CALLING | INCOMING | EARLY | CONNECTING | CONFIRMED | DISCONNECTED`).
+
+`<type>_tx_packets`/`<type>_rx_packets` are RTP packet counters from
+`pjsua_call_get_stream_stat`, for `audio` and `video`. **A pair is present
+only when the call has an active stream of that type** — absent is "no such
+stream", which zero cannot express.
+
+They answer the question `has_video` cannot: `has_video: true` means the
+stream exists and SDP agreed, not that a picture is moving. If the far end
+reports no video, read `video_tx_packets` twice a few seconds apart —
+stuck at zero (or absent) means nothing is being produced on this side,
+capture or encoder; climbing means the packets left the box and the far end
+or the network owns the rest.
 
 ## Events
 

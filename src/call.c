@@ -186,6 +186,37 @@ pj_status_t pjsocky_call_remote_offered_video(pjsua_call_id call_id,
     return PJ_SUCCESS;
 }
 
+pj_status_t pjsocky_call_get_rtp_counters(pjsua_call_id call_id,
+                                           pjmedia_type type,
+                                           unsigned *p_tx_packets,
+                                           unsigned *p_rx_packets)
+{
+    pjsua_call_info info;
+    pjsua_stream_stat stat;
+    pj_status_t status;
+    unsigned i;
+
+    status = pjsocky_call_get_info(call_id, &info);
+    if (status != PJ_SUCCESS)
+        return status;
+
+    for (i = 0; i < info.media_cnt; i++) {
+        if (info.media[i].type != type ||
+            info.media[i].status != PJSUA_CALL_MEDIA_ACTIVE)
+            continue;
+
+        status = pjsua_call_get_stream_stat(call_id, i, &stat);
+        if (status != PJ_SUCCESS)
+            return status;
+
+        *p_tx_packets = stat.rtcp.tx.pkt;
+        *p_rx_packets = stat.rtcp.rx.pkt;
+        return PJ_SUCCESS;
+    }
+
+    return PJ_ENOTFOUND;
+}
+
 pj_status_t pjsocky_call_answer(pjsua_call_id call_id, unsigned code,
                                  pj_bool_t video)
 {

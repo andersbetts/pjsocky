@@ -40,6 +40,12 @@ Initial release. Everything is new:
   `daemon_version`, in a startup log line, and in the SIP `User-Agent`.
   A release number that moves once a year cannot tell you whether the
   binary on a device is the one you just built; this can.
+- `call.get_info` reports RTP packet counters per media type
+  (`audio_tx_packets`/`audio_rx_packets`, `video_tx_packets`/
+  `video_rx_packets`), present only for a media type with an active
+  stream. `has_video` says a stream was negotiated; these say whether
+  anything is travelling through it, which is the difference between a
+  capture/encode fault on this side and a problem at the far end.
 - systemd packaging (packaging/), protocol test suite
   (tests/protocol/), automated live-call verification against a
   dockerized Asterisk (tests/asterisk/).
