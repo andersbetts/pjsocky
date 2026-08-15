@@ -115,7 +115,7 @@ On connect, the daemon proactively sends a `hello` event before anything
 else, with no request required:
 
 ```json
-{"event": "hello", "data": {"protocol_version": "1.0.0", "daemon_version": "0.1.0"}}
+{"event": "hello", "data": {"protocol_version": "1.0.0", "daemon_version": "0.1.0.1786652435"}}
 ```
 
 - `protocol_version` follows semver against *this document*. Same major
@@ -124,8 +124,14 @@ else, with no request required:
 - Within a major version, only additive changes are made (new optional
   fields, new commands, new events). A client must ignore unknown fields
   and unknown event names rather than erroring.
-- `daemon_version` is informational (pjsocky's own release version), not
-  meaningful for compatibility decisions.
+- `daemon_version` is informational, not meaningful for compatibility
+  decisions. It is `<release>.<build>`: three release components plus a
+  build number, the Unix epoch at which the binary was configured. The
+  release says what the daemon is, the build number says which copy — two
+  binaries built from the same source at different times differ here, which
+  is what makes a stale deployment visible in a log rather than invisible
+  behind a release number that rarely moves. Clients should treat the whole
+  thing as an opaque string; the shape may gain components.
 
 ## Backpressure
 
@@ -520,7 +526,7 @@ bump, not a v1 concern.
 
 ```
 -> (connect)
-<- {"event":"hello","data":{"protocol_version":"1.0.0","daemon_version":"0.1.0"}}
+<- {"event":"hello","data":{"protocol_version":"1.0.0","daemon_version":"0.1.0.1786652435"}}
 -> {"id":"1","cmd":"device.list_audio"}
 <- {"id":"1","ok":true,"result":{"devices":[{"id":0,"name":"default","input_channels":1,"output_channels":2}]}}
 -> {"id":"2","cmd":"account.configure","params":{"sip_uri":"sip:1000@example.com","registrar_uri":"sip:example.com","username":"1000","password":"secret"}}

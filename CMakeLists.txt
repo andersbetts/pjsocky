@@ -1,7 +1,26 @@
 cmake_minimum_required(VERSION 3.28)
 
+# Build number: the Unix epoch at configure time, as the fourth version
+# component. Same scheme as the application that spawns this daemon (tp4-app),
+# deliberately - two projects that ship as a pair are much easier to reason
+# about when "which build is this?" has the same answer shape in both.
+#
+# The release number (0.1.0) says what the daemon is; the build number says
+# which copy of it you are looking at, which is the question that actually gets
+# asked. Two binaries built from the same source at different times get
+# different version strings, so a stale deployment identifies itself in the log
+# instead of hiding behind a release number that has not moved since the
+# project started.
+#
+# Configure time, not build time - again matching tp4-app. CMake re-runs when
+# this file changes, so a `cmake --fresh` (or any reconfigure) is what mints a
+# new build number; an incremental rebuild keeps the one it was configured
+# with. If you are chasing a deployment question, reconfigure before building
+# so the stamp cannot be older than the code in the binary.
+string(TIMESTAMP PJSOCKY_BUILD_NUMBER "%s")
+
 project(pjsocky
-  VERSION 0.1.0
+  VERSION 0.1.0.${PJSOCKY_BUILD_NUMBER}
   DESCRIPTION "Headless SIP audio/video call daemon built on pjproject"
   LANGUAGES C
 )
@@ -166,8 +185,10 @@ target_link_libraries(pjsocky
 )
 
 # Reported in the "hello" event (docs/PROTOCOL.md "Versioning") as
-# daemon_version - derived from the single source of truth (this
-# project()'s VERSION) rather than a second hardcoded string in C.
+# daemon_version, logged once at startup, and sent as the SIP User-Agent -
+# derived from the single source of truth (this project()'s VERSION) rather
+# than a second hardcoded string in C. Carries the build number as its fourth
+# component, so all three identify the exact binary and not just the release.
 target_compile_definitions(pjsocky PRIVATE PJSOCKY_VERSION="${PROJECT_VERSION}")
 
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")

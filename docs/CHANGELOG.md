@@ -34,6 +34,12 @@ Initial release. Everything is new:
   (`config.set_ring_timeout`/`config.get_ring_timeout`), disabled
   (unbounded ring) by default; auto-rejects with `480 Temporarily
   Unavailable` once configured and elapsed.
+- The daemon version carries a build number: the Unix epoch at configure
+  time, as a fourth version component (`0.1.0.1786652435`), matching the
+  scheme tp4-app uses. It appears in the `hello` event's
+  `daemon_version`, in a startup log line, and in the SIP `User-Agent`.
+  A release number that moves once a year cannot tell you whether the
+  binary on a device is the one you just built; this can.
 - systemd packaging (packaging/), protocol test suite
   (tests/protocol/), automated live-call verification against a
   dockerized Asterisk (tests/asterisk/).

@@ -251,6 +251,12 @@ int main(void)
             pjsua_perror(THIS_FILE, "Error setting null sound device", status);
     }
 
+    /* Version first, and on its own line: the fourth component is the build
+     * number (configure-time epoch - see CMakeLists.txt), so this is what says
+     * whether the daemon running on a device is the one that was just built.
+     * The controlling application sees the same string in the hello event, but
+     * this line is here whether or not anything ever connects. */
+    PJ_LOG(3, (THIS_FILE, "pjsocky %s starting", PJSOCKY_VERSION));
     PJ_LOG(3, (THIS_FILE, "pjsocky started idle, no accounts configured"));
 
     {

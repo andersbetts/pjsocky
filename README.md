@@ -18,7 +18,7 @@ systems.
 ```
 $ PJSOCKY_SOCK_PATH=/tmp/pjsocky.sock ./build/pjsocky &
 $ socat - UNIX-CONNECT:/tmp/pjsocky.sock
-{"event":"hello","data":{"protocol_version":"1.0.0","daemon_version":"0.1.0"}}
+{"event":"hello","data":{"protocol_version":"1.0.0","daemon_version":"0.1.0.1786652435"}}
 {"id":"1","cmd":"account.configure","params":{"sip_uri":"sip:1000@pbx.example.com","registrar_uri":"sip:pbx.example.com","username":"1000","password":"secret"}}
 {"id":"1","ok":true,"result":{"acc_id":0}}
 {"id":"2","cmd":"account.register"}
