@@ -102,6 +102,25 @@ void pjsocky_call_on_call_media_state(pjsua_call_id call_id);
 void pjsocky_call_on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id,
                                     pjsip_rx_data *rdata);
 
+/*
+ * Incoming media offers (a re-INVITE from the far end). Raises vid_cnt so that
+ * video the peer turns on mid-call is accepted rather than answered inactive -
+ * see the implementation comment in call.c.
+ */
+void pjsocky_call_on_call_rx_offer(pjsua_call_id call_id,
+                                    const pjmedia_sdp_session *offer,
+                                    void *reserved,
+                                    pjsip_status_code *code,
+                                    pjsua_call_setting *opt);
+
+/*
+ * Video device failures during a call. Gives up on video once, quietly
+ * and for good, instead of letting the failure repeat per frame - see
+ * the implementation comment in call.c.
+ */
+void pjsocky_call_on_call_media_event(pjsua_call_id call_id, unsigned med_idx,
+                                       pjmedia_event *event);
+
 PJ_END_DECL
 
 #endif /* PJSOCKY_CALL_H */

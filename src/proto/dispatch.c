@@ -1,5 +1,6 @@
 #include "dispatch.h"
 #include "jsonutil.h"
+#include "version.h"
 
 #include "../account.h"
 #include "../call.h"
@@ -537,8 +538,29 @@ static pj_status_t cmd_im_typing(pj_pool_t *pool,
     return pjsocky_im_typing(&to, is_typing);
 }
 
+/*
+ * docs/PROTOCOL.md "version.get". Answers with exactly what the `hello`
+ * event carries, from the same builder - a client that reconnected, or
+ * that wants the numbers without waiting for a respawn's hello, asks
+ * here and gets the same object.
+ *
+ * Valid in every daemon state and touching no pjsua state at all, which
+ * is why it takes no params and cannot fail: "what are you" must be
+ * answerable by a daemon that is too broken to answer anything else.
+ */
+static pj_status_t cmd_version_get(pj_pool_t *pool,
+                                    const pj_json_elem *params,
+                                    pj_json_elem *result)
+{
+    PJ_UNUSED_ARG(params);
+
+    pjsocky_version_fill(pool, result);
+    return PJ_SUCCESS;
+}
+
 static const cmd_entry CMD_TABLE[] = {
     { "ping", &cmd_ping },
+    { "version.get", &cmd_version_get },
     { "status.get", &cmd_status_get },
     { "account.configure", &cmd_account_configure },
     { "account.register", &cmd_account_register },

@@ -9,8 +9,10 @@
  * flags - a deliberate choice (see CONTEXT.md's "Decide config file
  * format"), not a stopgap: PJSOCKY_SOCK_PATH (control socket path,
  * default /tmp/pjsocky.sock), PJSOCKY_LOG_LEVEL (0-6, default follows
- * pjsua's own defaults) and PJSOCKY_WRITE_TIMEOUT_MSEC (control-socket
- * write deadline, see below).
+ * pjsua's own defaults), PJSOCKY_WRITE_TIMEOUT_MSEC (control-socket
+ * write deadline, see below), PJSOCKY_VAD (silence detection, off by
+ * default here) and PJSOCKY_VIDEO_SIZE/PJSOCKY_VIDEO_FPS (encoder
+ * capture format - see the notes on each below).
  */
 #include "account.h"
 #include "call.h"
@@ -18,10 +20,12 @@
 #include "im.h"
 #include "proto/events.h"
 #include "proto/server.h"
+#include "proto/version.h"
 
 #include <pjsua-lib/pjsua.h>
 
 #include <signal.h>
+#include <stdio.h>   /* setvbuf() - see main() */
 #include <stdlib.h>
 
 #define THIS_FILE                   "main.c"
@@ -48,6 +52,89 @@
 #define PJSOCKY_WRITE_TIMEOUT_ENV   "PJSOCKY_WRITE_TIMEOUT_MSEC"
 
 /*
+ * Silence detection (VAD). Set to 1/on/yes/true to enable pjmedia's
+ * silence detector; anything else, or unset, leaves it off.
+ *
+ * pjsocky inverts pjsua-lib's default (VAD on) deliberately, matching
+ * pjsua's own demo app, which offers --no-vad for the same reason. With
+ * VAD on, a microphone whose level sits near the detector's threshold
+ * makes the daemon stop sending RTP mid-call and start again later:
+ * on real hardware (a quiet electret on an emergency call box) that is
+ * indistinguishable from a broken media path, it depends on the room
+ * rather than on anything the operator controls, and pjsocky - being
+ * headless - has nobody watching to notice audio came back. Continuous
+ * RTP is also what makes the packet counters in call.get_info a usable
+ * health signal. The bandwidth VAD saves is not worth any of that on a
+ * single-call device, but the switch is here for whoever disagrees.
+ */
+#define PJSOCKY_VAD_ENV             "PJSOCKY_VAD"
+
+/*
+ * Video encoder capture format: PJSOCKY_VIDEO_SIZE as "WxH" (e.g.
+ * "640x480") and PJSOCKY_VIDEO_FPS as a whole number of frames per
+ * second. Unset leaves pjmedia's own per-codec defaults alone.
+ *
+ * These exist because the codec default and the camera are chosen
+ * independently: pjmedia's H.264 default asks for 720x480, and a camera
+ * that cannot produce it (or cannot produce it in a pixel format
+ * pjmedia accepts) is opened at whatever it does support, after which
+ * every single frame is colour-converted and rescaled before it reaches
+ * the encoder. On a small ARM target that conversion is what stands
+ * between the negotiated frame rate and the delivered one. Setting the
+ * encoder to a size the camera produces natively removes the rescale
+ * entirely - see device.list_video and the daemon log line from
+ * vid_port.c that reports the format a device actually opened with.
+ */
+#define PJSOCKY_VIDEO_SIZE_ENV      "PJSOCKY_VIDEO_SIZE"
+#define PJSOCKY_VIDEO_FPS_ENV       "PJSOCKY_VIDEO_FPS"
+
+/*
+ * STUN server ("host" or "host:port"), for a device behind NAT. Unset means no
+ * STUN, which is the old behaviour and correct whenever the device's own
+ * address is the one peers can reach.
+ *
+ * Without it, pjmedia builds the SDP's media address from pj_gethostip() - the
+ * device's own interface address. SIP survives that, because the registrar
+ * rewrites Via/Contact from `rport`/`received`, but nothing rewrites the `c=`
+ * line inside the SDP body. So a NAT'd device sends a perfectly good INVITE
+ * that says "send my media to 192.168.10.2", and the far end does exactly that,
+ * into a private address it cannot route to.
+ *
+ * The failure is one-directional and silent, which is what makes it expensive:
+ * signalling completes, the call is established, our transmit counter climbs
+ * normally, and only the receive counter stays at zero forever. It looks
+ * exactly like a far end that is not sending. Measured on TP4 against the
+ * production PBX: `audio tx=497 rx=0`, with the answer naming a perfectly
+ * reachable `c=IN IP4 217.174.89.69`.
+ *
+ * A far end doing symmetric RTP (Asterisk's `rtp_symmetric`, "comedia") hides
+ * this by replying to wherever our packets actually came from, which is why the
+ * same firmware works against one PBX and not another. This is the fix on our
+ * side of that difference: with STUN, pjsua discovers the public address and
+ * port and puts them in the SDP, so the far end is told the truth and does not
+ * have to guess.
+ */
+#define PJSOCKY_STUN_SRV_ENV        "PJSOCKY_STUN_SRV"
+
+/*
+ * ICE, on top of STUN. 1/on/yes/true enables it; unset leaves it off.
+ *
+ * Kept separate from the STUN setting, and off by default, because the two fail
+ * differently. STUN only changes what we advertise, so a STUN server that is
+ * unreachable costs a timeout at startup and then behaves as if it were unset.
+ * ICE changes the negotiation itself, and a far end that does not support it
+ * has to be detected and fallen back from - which is worth having on a hostile
+ * network and is not worth having by default on a device that a working STUN
+ * address already fixes.
+ */
+#define PJSOCKY_ICE_ENV             "PJSOCKY_ICE"
+
+/* Sanity bounds for the two above - not hardware limits, just far enough
+ * out that anything beyond them is a typo rather than an intention. */
+#define PJSOCKY_VIDEO_MAX_DIM       8192
+#define PJSOCKY_VIDEO_MAX_FPS       240
+
+/*
  * Test-only: pjsip's default non-INVITE transaction timeout (RFC 3261
  * Timer F = 64*T1, T1 defaults to 500ms => 32s) means a REGISTER to an
  * address that doesn't produce a prompt transport-level error (e.g. a
@@ -59,6 +146,124 @@
  * timing, which matters for real registrations/calls.
  */
 #define PJSOCKY_TEST_FAST_TIMERS_ENV   "PJSOCKY_TEST_FAST_TIMERS"
+
+/*
+ * Reads a boolean-ish environment variable: unset or unrecognised is
+ * PJ_FALSE, "1"/"on"/"yes"/"true" (any case) is PJ_TRUE.
+ */
+static pj_bool_t env_flag_is_set(const char *name)
+{
+    const char *val = getenv(name);
+
+    if (!val)
+        return PJ_FALSE;
+
+    return (pj_ansi_strcmp(val, "1") == 0 ||
+            pj_ansi_stricmp(val, "on") == 0 ||
+            pj_ansi_stricmp(val, "yes") == 0 ||
+            pj_ansi_stricmp(val, "true") == 0);
+}
+
+/*
+ * Applies PJSOCKY_VIDEO_SIZE/PJSOCKY_VIDEO_FPS to every registered video
+ * codec. Must run after pjsua_init() (that is where codecs register) and
+ * before any call is set up.
+ *
+ * A malformed or out-of-range value is logged and ignored rather than
+ * being fatal: a daemon that refuses to start because of one bad
+ * environment variable is a worse failure mode than one that runs with
+ * the codec default and says so in the log.
+ */
+static void apply_video_format_override(void)
+{
+    const char *size_str = getenv(PJSOCKY_VIDEO_SIZE_ENV);
+    const char *fps_str = getenv(PJSOCKY_VIDEO_FPS_ENV);
+    pjsua_codec_info codecs[PJMEDIA_CODEC_MGR_MAX_CODECS];
+    unsigned codec_cnt = PJ_ARRAY_SIZE(codecs);
+    unsigned width = 0, height = 0, fps = 0;
+    unsigned i;
+    pj_status_t status;
+
+    if (size_str) {
+        /* Seeded with the input, not NULL: the *end checks below run even
+         * when nothing was parsed at all. */
+        char *end = (char *)size_str;
+        unsigned long w, h;
+
+        /* strtoul() happily accepts "-3" and wraps it into a huge unsigned,
+         * so the sign has to be rejected before parsing, not after. */
+        w = pj_isdigit(*size_str) ? strtoul(size_str, &end, 10) : 0;
+        h = (w && (*end == 'x' || *end == 'X') && pj_isdigit(end[1]))
+            ? strtoul(end + 1, &end, 10) : 0;
+
+        if (w == 0 || h == 0 || *end != '\0' ||
+            w > PJSOCKY_VIDEO_MAX_DIM || h > PJSOCKY_VIDEO_MAX_DIM)
+        {
+            PJ_LOG(1, (THIS_FILE, "Ignoring %s=\"%s\": expected WxH with "
+                       "each side 1-%d, e.g. 640x480",
+                       PJSOCKY_VIDEO_SIZE_ENV, size_str,
+                       PJSOCKY_VIDEO_MAX_DIM));
+        } else {
+            width = (unsigned)w;
+            height = (unsigned)h;
+        }
+    }
+
+    if (fps_str) {
+        char *end = (char *)fps_str;   /* see the size parse above */
+        unsigned long f = pj_isdigit(*fps_str) ? strtoul(fps_str, &end, 10) : 0;
+
+        if (f == 0 || *end != '\0' || f > PJSOCKY_VIDEO_MAX_FPS) {
+            PJ_LOG(1, (THIS_FILE, "Ignoring %s=\"%s\": expected a whole "
+                       "number of frames per second, 1-%d",
+                       PJSOCKY_VIDEO_FPS_ENV, fps_str,
+                       PJSOCKY_VIDEO_MAX_FPS));
+        } else {
+            fps = (unsigned)f;
+        }
+    }
+
+    if (!width && !fps)
+        return;
+
+    status = pjsua_vid_enum_codecs(codecs, &codec_cnt);
+    if (status != PJ_SUCCESS) {
+        pjsua_perror(THIS_FILE, "Error enumerating video codecs", status);
+        return;
+    }
+
+    for (i = 0; i < codec_cnt; i++) {
+        pjmedia_vid_codec_param param;
+
+        status = pjsua_vid_codec_get_param(&codecs[i].codec_id, &param);
+        if (status != PJ_SUCCESS) {
+            pjsua_perror(THIS_FILE, "Error reading video codec param", status);
+            continue;
+        }
+
+        if (width) {
+            param.enc_fmt.det.vid.size.w = width;
+            param.enc_fmt.det.vid.size.h = height;
+        }
+        if (fps) {
+            param.enc_fmt.det.vid.fps.num = fps;
+            param.enc_fmt.det.vid.fps.denum = 1;
+        }
+
+        status = pjsua_vid_codec_set_param(&codecs[i].codec_id, &param);
+        if (status != PJ_SUCCESS) {
+            pjsua_perror(THIS_FILE, "Error setting video codec param", status);
+            continue;
+        }
+
+        PJ_LOG(3, (THIS_FILE, "Video codec %.*s encodes at %dx%d @%d fps",
+                   (int)codecs[i].codec_id.slen, codecs[i].codec_id.ptr,
+                   (int)param.enc_fmt.det.vid.size.w,
+                   (int)param.enc_fmt.det.vid.size.h,
+                   (int)(param.enc_fmt.det.vid.fps.num /
+                         param.enc_fmt.det.vid.fps.denum)));
+    }
+}
 
 /*
  * Set once by main() before installing the signal handler below, and
@@ -87,6 +292,27 @@ int main(void)
     pj_pool_t *pool;
     pjsocky_events_t *events;
     pjsocky_server_t *srv;
+
+    /*
+     * Line-buffer the log before anything writes to it.
+     *
+     * pjsocky's whole log is stdout, and on a device it is a pipe to the
+     * launching application rather than a terminal - which means glibc picks
+     * full buffering, not line buffering, and nothing reaches the reader until
+     * 4KB has accumulated. On a quiet daemon that is not a small delay: an
+     * observed run had lines arriving in the system journal one hour and
+     * forty-four minutes after the events they described, in a burst, with
+     * their own timestamps intact and the journal's wrong.
+     *
+     * That is worse than losing the lines. A log whose ordering against the
+     * rest of the system is silently false invites conclusions drawn from a
+     * sequence that never happened - and this is a daemon whose faults are
+     * diagnosed almost entirely by reading its log next to somebody else's.
+     *
+     * _IOLBF costs a write() per line, which on a log this size is nothing
+     * next to being able to trust it.
+     */
+    setvbuf(stdout, NULL, _IOLBF, 0);
 
     status = pjsua_create();
     if (status != PJ_SUCCESS) {
@@ -182,9 +408,44 @@ int main(void)
         ua_cfg.user_agent = pj_str(ua);
     }
 
+    /* See PJSOCKY_VAD_ENV: the library default (VAD on) is inverted here,
+     * and the env var is how to get it back. */
+    media_cfg.no_vad = !env_flag_is_set(PJSOCKY_VAD_ENV);
+    if (!media_cfg.no_vad)
+        PJ_LOG(3, (THIS_FILE, "%s set: silence detection enabled",
+                   PJSOCKY_VAD_ENV));
+
+    /* Before pjsua_init(): pjsua resolves the STUN server and performs the
+       binding request during init, and the address it learns is what every
+       later media transport is created with. */
+    {
+        const char *stun = getenv(PJSOCKY_STUN_SRV_ENV);
+
+        if (stun != NULL && stun[0] != '\0') {
+            ua_cfg.stun_srv_cnt = 1;
+            ua_cfg.stun_srv[0] = pj_str((char *)stun);
+
+            /* Not fatal if it cannot be reached: a device that refuses to start
+               because a STUN server is down is a worse failure than one that
+               starts and advertises its local address, which is exactly what it
+               would have done without this setting at all. */
+            ua_cfg.stun_ignore_failure = PJ_TRUE;
+
+            PJ_LOG(3, (THIS_FILE, "STUN server %s (%s)", stun,
+                       PJSOCKY_STUN_SRV_ENV));
+        }
+
+        if (env_flag_is_set(PJSOCKY_ICE_ENV)) {
+            media_cfg.enable_ice = PJ_TRUE;
+            PJ_LOG(3, (THIS_FILE, "%s set: ICE enabled", PJSOCKY_ICE_ENV));
+        }
+    }
+
     ua_cfg.cb.on_reg_state2 = &pjsocky_account_on_reg_state2;
     ua_cfg.cb.on_call_state = &pjsocky_call_on_call_state;
     ua_cfg.cb.on_call_media_state = &pjsocky_call_on_call_media_state;
+    ua_cfg.cb.on_call_media_event = &pjsocky_call_on_call_media_event;
+    ua_cfg.cb.on_call_rx_offer = &pjsocky_call_on_call_rx_offer;
     ua_cfg.cb.on_incoming_call = &pjsocky_call_on_incoming_call;
     ua_cfg.cb.on_pager2 = &pjsocky_im_on_pager2;
     ua_cfg.cb.on_pager_status2 = &pjsocky_im_on_pager_status2;
@@ -207,6 +468,11 @@ int main(void)
         pjsua_destroy();
         return 1;
     }
+
+    /* Codecs register during pjsua_init(), so any encoder-side override
+     * has to land after it and before the first call - see
+     * PJSOCKY_VIDEO_SIZE_ENV. */
+    apply_video_format_override();
 
     /*
      * pjsua_acc_add() asserts on there being at least one SIP transport
@@ -256,7 +522,8 @@ int main(void)
      * whether the daemon running on a device is the one that was just built.
      * The controlling application sees the same string in the hello event, but
      * this line is here whether or not anything ever connects. */
-    PJ_LOG(3, (THIS_FILE, "pjsocky %s starting", PJSOCKY_VERSION));
+    PJ_LOG(3, (THIS_FILE, "pjsocky %s (protocol %s, pjsip %s) starting",
+               PJSOCKY_VERSION, PJSOCKY_PROTOCOL_VERSION, pj_get_version()));
     PJ_LOG(3, (THIS_FILE, "pjsocky started idle, no accounts configured"));
 
     {

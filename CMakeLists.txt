@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.28)
 # deliberately - two projects that ship as a pair are much easier to reason
 # about when "which build is this?" has the same answer shape in both.
 #
-# The release number (0.1.0) says what the daemon is; the build number says
+# The release number (0.2.0) says what the daemon is; the build number says
 # which copy of it you are looking at, which is the question that actually gets
 # asked. Two binaries built from the same source at different times get
 # different version strings, so a stale deployment identifies itself in the log
@@ -20,7 +20,7 @@ cmake_minimum_required(VERSION 3.28)
 string(TIMESTAMP PJSOCKY_BUILD_NUMBER "%s")
 
 project(pjsocky
-  VERSION 0.1.0.${PJSOCKY_BUILD_NUMBER}
+  VERSION 0.2.0.${PJSOCKY_BUILD_NUMBER}
   DESCRIPTION "Headless SIP audio/video call daemon built on pjproject"
   LANGUAGES C
 )
@@ -167,6 +167,7 @@ add_executable(pjsocky
   src/proto/jsonutil.c
   src/proto/dispatch.c
   src/proto/events.c
+  src/proto/version.c
   src/proto/server.c
 )
 

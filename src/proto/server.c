@@ -3,6 +3,7 @@
 #include "events.h"
 #include "framing.h"
 #include "jsonutil.h"
+#include "version.h"
 
 #include <pj/assert.h>
 #include <pj/errno.h>
@@ -104,22 +105,14 @@ static pj_status_t set_nonblocking(pj_sock_t sock)
     return PJ_SUCCESS;
 }
 
-/*
- * docs/PROTOCOL.md "Versioning": follows semver against the protocol
- * document itself, not PJSOCKY_VERSION (the daemon's own release
- * version, reported separately below). Bumped from "1.0.0-draft" once
- * the v1 command surface was considered stable enough to tag - see the
- * note at the top of PROTOCOL.md. Any future breaking change bumps to
- * 2.x per the same note.
- */
-#define PJSOCKY_PROTOCOL_VERSION "1.0.0"
-
+/* docs/PROTOCOL.md "Versioning". The same fields the `version.get`
+ * command answers with, from the same builder (proto/version.h) - being
+ * told on connect and asking later must not give different answers. */
 static void build_hello_data(pj_pool_t *pool, pj_json_elem *data, void *user_data)
 {
     PJ_UNUSED_ARG(user_data);
 
-    pjsocky_json_add_string(pool, data, "protocol_version", PJSOCKY_PROTOCOL_VERSION);
-    pjsocky_json_add_string(pool, data, "daemon_version", PJSOCKY_VERSION);
+    pjsocky_version_fill(pool, data);
 }
 
 /* Builder for the "error" event (docs/PROTOCOL.md "Events" - `error`):
