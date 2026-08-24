@@ -18,7 +18,7 @@ systems.
 ```
 $ PJSOCKY_SOCK_PATH=/tmp/pjsocky.sock ./build/pjsocky &
 $ socat - UNIX-CONNECT:/tmp/pjsocky.sock
-{"event":"hello","data":{"protocol_version":"1.0.0","daemon_version":"0.1.0"}}
+{"event":"hello","data":{"protocol_version":"1.1.0","daemon_version":"0.2.0.1786652435","pjsip_version":"2.15.1"}}
 {"id":"1","cmd":"account.configure","params":{"sip_uri":"sip:1000@pbx.example.com","registrar_uri":"sip:pbx.example.com","username":"1000","password":"secret"}}
 {"id":"1","ok":true,"result":{"acc_id":0}}
 {"id":"2","cmd":"account.register"}
@@ -86,6 +86,9 @@ Environment variables only — no config file, no CLI flags:
 | `PJSOCKY_SOCK_PATH` | `/tmp/pjsocky.sock` | Control socket path |
 | `PJSOCKY_LOG_LEVEL` | pjsua defaults (5/4) | Log verbosity 0–6 |
 | `PJSOCKY_WRITE_TIMEOUT_MSEC` | `5000` | Drop a control client that stops reading past this deadline |
+| `PJSOCKY_VAD` | off | Enable pjmedia's silence detector (`1`/`on`/`yes`/`true`). Off by default: near the detector's threshold a quiet microphone makes the daemon stop sending RTP mid-call, which on headless hardware is indistinguishable from a broken media path |
+| `PJSOCKY_VIDEO_SIZE` | codec default | Video encoder capture size as `WxH`, e.g. `640x480`. Set it to a size the camera produces natively (see `device.list_video` and the daemon's `vid_port.c` log line) to avoid rescaling every frame |
+| `PJSOCKY_VIDEO_FPS` | codec default | Video encoder frame rate, whole frames per second |
 
 For running under systemd (dedicated user, socket in `/run/pjsocky/`,
 restart policy, hardening), see [packaging/](packaging/) — the unit

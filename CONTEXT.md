@@ -214,9 +214,12 @@ Events (`{"event":..,"data":{...}}`, no `id`, pushed async):
       `pjsocky_events_set_conn()`, before the request loop starts) -
       `docs/PROTOCOL.md` already specified the wire format, it just
       wasn't wired up in code until now. `protocol_version` was
-      `"1.0.0-draft"` until step 17, now reported as `"1.0.0"` (see
-      `PJSOCKY_PROTOCOL_VERSION` in `server.c`) - see step 17's notes on
-      the tag. `daemon_version` comes from `PJSOCKY_VERSION`, a compile definition
+      `"1.0.0-draft"` until step 17, then `"1.0.0"`, now `"1.1.0"` (see
+      `PJSOCKY_PROTOCOL_VERSION`, which moved to `proto/version.h` when
+      `version.get` gave it a second reader) - see step 17's notes on
+      the tag. The `hello` payload itself is built by
+      `pjsocky_version_fill()`, shared with that command so the two
+      cannot disagree. `daemon_version` comes from `PJSOCKY_VERSION`, a compile definition
       derived from `CMakeLists.txt`'s `project(... VERSION ...)` rather
       than a second hardcoded string.
 - [x] Typing indicators (`on_typing2`/`SIP MESSAGE` composing state) are
@@ -777,6 +780,205 @@ Events (`{"event":..,"data":{...}}`, no `id`, pushed async):
         `docs/PROTOCOL.md`'s header, `README.md`'s example session, and
         `docs/CHANGELOG.md`. Per `PROTOCOL.md`'s own versioning note,
         the document is now append-only within the 1.x line.
+
+18. [x] First real hardware bring-up on the STM32MP15 target
+        (root@192.168.7.2, OpenSTLinux, tp4 firmware; pjsocky runs as a
+        child of `tp4-app` from `/opt/tp4/current/bin/`, socket
+        `/tmp/pjsocky.sock`). Reported symptom: "media throughput does
+        not work on my device, others report it works on theirs".
+        Investigated by stopping `tp4`, running a freshly cross-built
+        pjsocky by hand (`PJSOCKY_LOG_LEVEL=5`), and calling the
+        dockerized test PBX from `tests/asterisk/` (bound to
+        `0.0.0.0:5080` instead of loopback so the device can reach it)
+        while watching the RTP counters `call.get_info` gained in
+        commit d896550. Four separate things were found; only the first
+        is fixed in the tree.
+
+        Bench tooling note: the target's SSH server does not support
+        `direct-streamlocal`, so `ssh -L <port>:/tmp/pjsocky.sock` fails
+        with "unknown channel type", and the target has no python3,
+        socat, or `nc -U`. Driving the control socket from a laptop
+        needs a tiny stdio<->unix-socket relay cross-compiled and run
+        over plain `ssh` stdio instead.
+
+        - **The null video renderer could not change format** (fixed in
+          `src/null_video_dev.c`). `info.caps` was 0 and `stream_set_cap`
+          returned `PJMEDIA_EVID_INVCAP` for everything, including
+          `PJMEDIA_VID_DEV_CAP_FORMAT`. pjmedia's `vid_port`
+          (`handle_format_change()`) calls exactly that whenever the
+          size a render port was opened with differs from the real one -
+          which is always, for both render ports pjsua creates: the
+          remote-video window (opened at a guess, corrected when the
+          first frame decodes: `656x656 -> 720x480` in the log) and the
+          hidden capture preview (opened at the requested 720x480 while
+          the camera actually opened as YUY2 640x480). The failure is
+          not cosmetic: vid_port reverts to the old format and then
+          rejects every frame with "Unexpected frame size 645504,
+          expected 518400" (= I420 656x656 vs I420 720x480), publishing
+          a `PJMEDIA_EVENT_VID_DEV_ERROR` per frame. Fix: advertise
+          `PJMEDIA_VID_DEV_CAP_FORMAT` and have get/set_cap store and
+          return `strm->param.fmt` - a discarding sink can accept any
+          format, but it must *remember* it, since vid_port reads it
+          back via `get_param()` on the next change. Verified: the
+          error storm is gone (0 occurrences in a full call),
+          `test_basic.py` 49/49 and the dockerized live suite 6/6 still
+          pass. This is the "works on their device" difference: a real
+          SDL/render device implements CAP_FORMAT, so nobody with a
+          display ever hit it.
+        - **Silence detection (VAD) silently stopped audio RTP**
+          (fixed: `no_vad` now defaults to true, `PJSOCKY_VAD=1` turns
+          the detector back on). pjsua's default
+          `pjsua_media_config.no_vad = PJ_FALSE` is inherited as-is in
+          `main.c`. On this hardware both microphones are quiet
+          (recorded room noise: max9860 rms 449, USB CAM rms 236 out of
+          32768), which puts them right at pjmedia's silence threshold.
+          Observed: a call on the USB CAM mic transmitted 33 audio
+          packets (~0.6s) and then nothing, while video kept flowing -
+          the log says "VAD re-enabled" / "Starting silence". Proven
+          causal both ways: a bench-only `PJSOCKY_NO_VAD` build
+          restored a continuous 50 pkt/s, and dropping the CAM mixer
+          gain to 5% froze TX at 70 packets deterministically. It is
+          intermittent at stock gain - the same setup streamed fine on
+          a later run - which is exactly the shape of "it works for
+          them, not for me". Resolved by inverting the library default
+          in `main.c` - which is also what pjsua's own demo app does
+          with `--no-vad` - and keeping the switch as an env var, per
+          the env-vars-only config decision. Continuous RTP is also
+          what makes `call.get_info`'s packet counters usable as a
+          health signal: with VAD on, "tx stopped" means nothing.
+        - **SDP media address on a multi-homed device** (investigated,
+          nothing to fix - bench artifact). The target has two
+          interfaces (`enu1i4` 192.168.10.2,
+          the default route, and `enu1u3` 192.168.7.2). SIP itself is
+          fine - pjsip picks the source address per destination, so the
+          Via/Contact correctly said 192.168.7.2 - but pjmedia's RTP
+          address comes from `pj_gethostip()` once at init, so the SDP
+          carried `c=IN IP4 192.168.10.2` for a peer reachable only via
+          192.168.7.x. Result: signalling and TX look perfect,
+          `audio_rx_packets` stays 0 forever. It only recovers if the
+          far end does symmetric RTP (adding `rtp_symmetric = yes` to
+          the test PBX endpoint fixed it immediately, and is what a
+          NAT-facing production PBX does). `main.c` sets no
+          `pjsua_media_config.bound_addr`/`public_addr` and pjsocky
+          exposes no way to, so on a multi-homed box the media address
+          is simply whichever interface owns the default route.
+          Confirmed with the hardware owner afterwards: the 192.168.7.x
+          link is the development PC's SSH link only and is never a
+          route to anything, so the default-route address pjmedia picks
+          is the correct one in production and only the bench PBX (which
+          lived on the PC) was reachable by a path the SDP did not name.
+          Recorded rather than fixed - but worth remembering, because
+          the symptom (registration fine, calls connect, TX counts up,
+          RX flat at zero forever) looks exactly like a broken far end,
+          and any future bench PBX on the PC link needs
+          `rtp_symmetric = yes` to work at all.
+        - **Video ran at ~8-10 fps of the negotiated 15** (fixed as
+          far as it can be, with `PJSOCKY_VIDEO_SIZE`/
+          `PJSOCKY_VIDEO_FPS`). pjsua asks the camera
+          for I420 720x480; the UVC camera has no I420 and no usable
+          MJPEG for pjmedia, so v4l2 opens YUY2 640x480 and every frame
+          is colour-converted *and* rescaled before H.264 encode. With
+          decode of the echoed 720x480 stream on top, pjsocky uses
+          ~0.8 of one Cortex-A7 core and the log shows steady
+          `capdbuf Underflow` and `Skipped N frames to reduce delay`.
+          `main.c` now applies `PJSOCKY_VIDEO_SIZE`/`PJSOCKY_VIDEO_FPS`
+          to every registered video codec after `pjsua_init()` (codecs
+          register during init, so it cannot happen earlier), which lets
+          the encoder be set to a size the camera produces natively.
+          Measured on this target with `PJSOCKY_VIDEO_SIZE=640x480`:
+          video RTP went from 8.5 to 13 packets/sec (of a 15 fps
+          target), at ~0.93 of one Cortex-A7 core. The remaining gap is
+          the YUY2->I420 colour conversion, which cannot be avoided -
+          the camera has no I420 mode and its MJPEG is not a format
+          pjmedia's v4l2 driver accepts. Deliberately not automatic:
+          picking a size out of the device's own format list means
+          picking, and getting it wrong (this camera also offers
+          2592x1944) is far worse on an A7 than leaving the codec
+          default alone. **The target's launcher has to set this** -
+          pjsocky is started by `tp4-app`, so the variable belongs
+          wherever that spawns it.
+
+        Both required configurations were re-verified after the fixes,
+        against the bench PBX with the RTP counters as the evidence:
+        max9860 audio-only (50 pkt/s each way, sustained) and USB CAM
+        mic + USB CAM video (50 pkt/s audio each way, 13 pkt/s video
+        each way, no format errors in the log). `test_basic.py` 52/52
+        (three new tests cover the new env vars, including that a
+        malformed one is ignored rather than fatal) and the dockerized
+        live suite 6/6.
+
+        Also worth knowing about the audio devices themselves: use
+        `default:CARD=CAM` (the ALSA plug device) as the USB CAM
+        capture id. `front:CARD=CAM,DEV=0` is enumerated too, but it is
+        stereo-only and `call.dial` fails on it with
+        `PJMEDIA_EAUD_SYSERR` ("Unable to set a channel count of 1").
+        max9860 (`default:CARD=max9860hifi`) opens cleanly for both
+        directions at 16 kHz mono.
+
+19. [x] Video faults no longer scream, and no longer cost the call.
+        Reported after step 18: "if configured to use video but no video
+        device is present, pjsocky screams with errors - one warning
+        would be enough, otherwise continue with the call, but without
+        video". Reproduced on the target by unbinding the USB camera
+        (`echo 1-1.1.1.2:1.0 > /sys/bus/usb/drivers/uvcvideo/unbind`),
+        which turns out to expose three distinct cases, not one:
+
+        - **Camera gone before the call.** pjsua fails the video channel
+          update once, tears the video stream down and the call runs as
+          an audio call - a handful of log lines, already fine.
+        - **Camera gone after startup but before enumeration matters.**
+          pjmedia's v4l2 factory enumerates once at startup, so the
+          camera simply is not in `device.list_video`, and the account's
+          fallback pick lands on pjmedia's **colorbar generator** - a
+          synthetic test source that produces frames happily. Video
+          "works" and the far end sees a test pattern. Nothing said so
+          before; `account.c` now warns once when the fallback resolves
+          to a Colorbar device, and once when there is no capture device
+          at all.
+        - **Camera pulled during a call - this is the scream.**
+          `vid_conf.c` retries the dead capture port once per frame
+          interval and logs `Failed to get frame from port N [...]: No
+          such device` every time - 312 lines in 20 seconds and
+          unbounded, while the call stays up and audio is unaffected.
+          It is not a `PJMEDIA_EVENT_VID_DEV_ERROR`; nothing in
+          pjsua-lib times it out, and no event ever tells the
+          controlling application that the video it negotiated is dead.
+
+        Fixed in `call.c` with one shared path, `give_up_on_video()`:
+        warn once, `pjsua_call_set_vid_strm(PJSUA_CALL_VID_STRM_REMOVE)`
+        (a re-INVITE without the m=video line, which also destroys the
+        capture port - that is what actually stops the retry loop), and
+        mark the call so every later report of the same fault is
+        silent. It is reached two ways:
+        - `on_call_media_event` (newly registered in `main.c`) for
+          `PJMEDIA_EVENT_VID_DEV_ERROR`. Safe to call
+          `pjsua_call_set_vid_strm()` from there: pjsua-lib dispatches
+          that callback from a timer on its worker thread
+          (`call_med_event_cb` in pjsua_media.c), not from the media
+          thread that published the event.
+        - A watchdog polling the video TX packet counter every 3s, for
+          the silent kind. A sending stream (ACTIVE, encoding direction,
+          so a far-end hold is excluded by construction) that sends
+          nothing across a window is dead. A stream that has never sent
+          anything gets two windows instead of one - a first keyframe on
+          a slow encoder is not the same thing as a stopped camera.
+
+        Result on hardware: `Failed to get frame` went from unbounded to
+        50 lines (~3s), followed by one `call.c` warning, `has_video`
+        flipping to false, a `call_media_state` event, and the audio
+        call carrying on untouched. A healthy 30s video call is
+        unaffected (310 video packets, watchdog never fires).
+        `docs/PROTOCOL.md`'s `call_media_state` now documents that a
+        call can lose video and keep going, since that is a wire-visible
+        behaviour a client has to expect. test_basic.py 52/52, live
+        suite 6/6.
+
+        Testing note for whoever repeats this: `run_live_tests.py` fails
+        its two incoming-call tests with a bare "timed out" if any other
+        Asterisk is already bound to host port 5080 (e.g. a bench PBX
+        left running from step 18) - registration silently goes to the
+        wrong one, so the outgoing tests still pass. Check for a stray
+        container before believing that failure.
 
 ## Non-goals (explicit, revisit only with a real requirement)
 

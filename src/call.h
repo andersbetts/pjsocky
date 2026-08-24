@@ -45,6 +45,26 @@ pj_status_t pjsocky_call_answer(pjsua_call_id call_id, unsigned code,
                                  pj_bool_t video);
 
 /*
+ * RTP packet counters for the first active stream of `type` on this call,
+ * straight out of pjsua_call_get_stream_stat().
+ *
+ * The point is the difference between "negotiated" and "flowing", which
+ * nothing else here can tell you: a call reports media active, and
+ * call_media_state says has_video, as soon as the stream object exists and
+ * SDP agreed - whether or not a single frame is ever captured, encoded and
+ * sent. When the far end reports no picture, tx_packets is the question
+ * that splits the problem in half: still zero means nothing is being
+ * produced on this side (capture or encoder), climbing means the bytes left
+ * the box and the far end or the network owns the rest.
+ *
+ * Returns PJ_ENOTFOUND when the call has no active stream of that type.
+ */
+pj_status_t pjsocky_call_get_rtp_counters(pjsua_call_id call_id,
+                                           pjmedia_type type,
+                                           unsigned *p_tx_packets,
+                                           unsigned *p_rx_packets);
+
+/*
  * Whether the remote offered video on this call
  * (pjsua_call_info.rem_vid_cnt > 0). Used to resolve call.answer's
  * "video" default when the client doesn't specify one - see
@@ -81,6 +101,25 @@ void pjsocky_call_on_call_state(pjsua_call_id call_id, pjsip_event *e);
 void pjsocky_call_on_call_media_state(pjsua_call_id call_id);
 void pjsocky_call_on_incoming_call(pjsua_acc_id acc_id, pjsua_call_id call_id,
                                     pjsip_rx_data *rdata);
+
+/*
+ * Incoming media offers (a re-INVITE from the far end). Raises vid_cnt so that
+ * video the peer turns on mid-call is accepted rather than answered inactive -
+ * see the implementation comment in call.c.
+ */
+void pjsocky_call_on_call_rx_offer(pjsua_call_id call_id,
+                                    const pjmedia_sdp_session *offer,
+                                    void *reserved,
+                                    pjsip_status_code *code,
+                                    pjsua_call_setting *opt);
+
+/*
+ * Video device failures during a call. Gives up on video once, quietly
+ * and for good, instead of letting the failure repeat per frame - see
+ * the implementation comment in call.c.
+ */
+void pjsocky_call_on_call_media_event(pjsua_call_id call_id, unsigned med_idx,
+                                       pjmedia_event *event);
 
 PJ_END_DECL
 

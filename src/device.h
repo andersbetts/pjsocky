@@ -33,18 +33,29 @@ pj_status_t pjsocky_device_list_video(pjmedia_vid_dev_info devices[],
                                        unsigned *p_count);
 
 /*
- * Wraps pjsua_set_snd_dev(). Takes effect on the currently open sound
- * device / the next call, per docs/PROTOCOL.md "device.set_audio".
+ * Selects the devices call audio will use, per docs/PROTOCOL.md
+ * "device.set_audio". Does not open them: outside a call the selection is
+ * only recorded, and the hardware is opened when a call's media connects
+ * and closed again shortly after it ends. During a call it switches the
+ * open device, as before. See the comment on the implementation for why
+ * selecting used to open the device and what that cost.
  */
 pj_status_t pjsocky_device_set_audio(int capture_id, int playback_id);
 
 /*
  * Selects the capture device future calls with video should use.
- * Doesn't open the device itself - call.c (not written yet, build-order
- * step 8+) is what will actually wire this into call media setup. See
- * docs/PROTOCOL.md "device.set_video".
+ * Doesn't open the device itself - call media setup is what wires this in
+ * (see call.c's apply_video_capture_device()). See docs/PROTOCOL.md
+ * "device.set_video".
+ *
+ * Fails with PJ_EINVAL (invalid_params on the wire) if the id is not a
+ * device that can capture. A render-only device accepted here is not a
+ * harmless mistake:
+ * pjsua opens it in the capture direction anyway and simply never gets a
+ * frame out of it, so the call negotiates video, reports media active, and
+ * sends nothing at all.
  */
-void pjsocky_device_set_video_capture(pjmedia_vid_dev_index capture_id);
+pj_status_t pjsocky_device_set_video_capture(pjmedia_vid_dev_index capture_id);
 pjmedia_vid_dev_index pjsocky_device_get_video_capture(void);
 
 /*

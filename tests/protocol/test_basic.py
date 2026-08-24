@@ -35,9 +35,32 @@ UNREACHABLE_REGISTRAR = "sip:127.0.0.1:1"
 
 def test_hello_on_connect(c):
     # Client.__init__ already consumed it (see client.py) - just check
-    # its shape is what docs/PROTOCOL.md promises.
-    assert set(c.hello["data"].keys()) == {"protocol_version", "daemon_version"}, c.hello
+    # its shape is what docs/PROTOCOL.md promises. A superset check, not
+    # an exact one: the protocol is additive within 1.x, so a new field
+    # is a legal daemon change and must not fail a client's checks - the
+    # exact-key form of this assertion had to be edited when
+    # pjsip_version was added in 1.1.0, which is precisely the client
+    # behaviour the spec tells clients not to have.
+    assert {"protocol_version", "daemon_version", "pjsip_version"} <= set(
+        c.hello["data"].keys()), c.hello
     assert c.hello["data"]["protocol_version"].startswith("1."), c.hello
+
+
+def test_version_get_matches_hello(c):
+    # docs/PROTOCOL.md "version.get": the same object the hello event
+    # carried, which is the whole promise of having both.
+    resp = c.call("version.get")
+    assert resp["ok"] is True, resp
+    assert resp["result"] == c.hello["data"], (resp, c.hello)
+    assert resp["result"]["protocol_version"].startswith("1."), resp
+    assert resp["result"]["pjsip_version"], resp
+
+
+def test_version_get_ignores_params(c):
+    # Takes none, and cannot fail - a stray params object is not an
+    # error, matching every other no-params command here.
+    resp = c.call("version.get", {"bogus": 1})
+    assert resp["ok"] is True, resp
 
 
 def test_ping(c):
@@ -198,6 +221,20 @@ def test_device_set_video(c):
     resp = c.call("device.set_video", {"capture_id": capture_devs[0]["id"]})
     assert resp["ok"] is True, resp
     assert resp["result"] == {}, resp
+
+
+def test_device_set_video_rejects_render_only(c):
+    """A render-only device is not a camera, and selecting one used to be
+    accepted silently: pjsua opens it in the capture direction anyway, never
+    gets a frame, and the call then negotiates video and sends nothing. The
+    daemon always registers its own null renderer, so there is one to try."""
+    devices = c.call("device.list_video")["result"]["devices"]
+    render_only = [d for d in devices if d["dir"] == "render"]
+    assert render_only, "expected the daemon's own null render device"
+
+    resp = c.call("device.set_video", {"capture_id": render_only[0]["id"]})
+    assert resp["ok"] is False, resp
+    assert resp["error"]["code"] == "invalid_params", resp
 
 
 # No SIP server is available in this environment (checked - only a SIP
@@ -546,8 +583,50 @@ def test_im_typing_missing_params(c):
     assert resp["error"]["code"] == "invalid_params", resp
 
 
+def test_malformed_video_env_does_not_stop_the_daemon(c):
+    # PJSOCKY_VIDEO_SIZE/FPS are parsed at startup (see main.c's
+    # apply_video_format_override). A bad value must be logged and
+    # ignored, never fatal - refusing to start over one environment
+    # variable is a worse failure mode on an unattended device than
+    # running with the codec default.
+    assert c.call("ping")["ok"] is True
+    assert c.call("device.list_video")["ok"] is True
+
+
+test_malformed_video_env_does_not_stop_the_daemon.extra_env = {
+    "PJSOCKY_VIDEO_SIZE": "potato",
+    "PJSOCKY_VIDEO_FPS": "-3",
+}
+
+
+def test_video_env_override_starts_cleanly(c):
+    # The valid-value counterpart: a daemon told to encode at a
+    # particular size still comes up and serves normally. (The size
+    # itself only becomes observable in SDP on a real call - see
+    # tests/protocol/test_live_call.py.)
+    assert c.call("ping")["ok"] is True
+    assert c.call("device.list_video")["ok"] is True
+
+
+test_video_env_override_starts_cleanly.extra_env = {
+    "PJSOCKY_VIDEO_SIZE": "640x480",
+    "PJSOCKY_VIDEO_FPS": "15",
+}
+
+
+def test_vad_can_be_enabled_by_env(c):
+    # Silence detection is off by default (see main.c's PJSOCKY_VAD_ENV
+    # comment for why); the switch back on must not break startup.
+    assert c.call("ping")["ok"] is True
+
+
+test_vad_can_be_enabled_by_env.extra_env = {"PJSOCKY_VAD": "1"}
+
+
 TESTS = [
     test_hello_on_connect,
+    test_version_get_matches_hello,
+    test_version_get_ignores_params,
     test_ping,
     test_status_get_idle,
     test_unknown_command,
@@ -564,6 +643,7 @@ TESTS = [
     test_device_set_audio,
     test_device_set_audio_missing_param,
     test_device_set_video,
+    test_device_set_video_rejects_render_only,
     test_dial_without_registration_fails,
     test_dial_with_no_account_fails,
     test_dial_missing_uri,
@@ -595,6 +675,9 @@ TESTS = [
     test_ring_timeout_can_be_disabled_again,
     test_ring_timeout_missing_param,
     test_ring_timeout_negative_rejected,
+    test_malformed_video_env_does_not_stop_the_daemon,
+    test_video_env_override_starts_cleanly,
+    test_vad_can_be_enabled_by_env,
 ]
 
 

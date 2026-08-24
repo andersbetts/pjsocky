@@ -25,14 +25,51 @@ static pjmedia_vid_dev_index resolve_default_vid_cap_dev(void)
     pjmedia_vid_dev_index cap_dev = pjsocky_device_get_video_capture();
     pjmedia_vid_dev_info devices[PJSOCKY_MAX_DEVICES];
     unsigned count = PJSOCKY_MAX_DEVICES;
+    unsigned i;
 
     if (cap_dev != PJMEDIA_VID_INVALID_DEV)
         return cap_dev;
 
-    if (pjsocky_device_list_video(devices, &count) == PJ_SUCCESS && count > 0)
-        return devices[0].id;
+    if (pjsocky_device_list_video(devices, &count) != PJ_SUCCESS)
+        return PJMEDIA_VID_INVALID_DEV;
 
-    return PJMEDIA_VID_INVALID_DEV; /* no video device on this system at all */
+    /* The first device that can actually capture, not simply the first
+     * device. The enumeration carries render-only devices too -- the null
+     * renderer registered in main.c is one -- and pjsua will happily open a
+     * render-only device in the capture direction and then never produce a
+     * frame from it, so picking one here costs the call its outgoing video
+     * without failing anything. That is only reachable when the camera is
+     * missing from the enumeration (unplugged, or attached after pjsocky
+     * started, since the v4l2 factory enumerates once), which is exactly
+     * when the difference matters. */
+    for (i = 0; i < count; i++) {
+        if ((devices[i].dir & PJMEDIA_DIR_CAPTURE) == 0)
+            continue;
+
+        /* pjmedia's own colorbar generator is a synthetic test source, not
+         * a camera, and it enumerates on every build that has it compiled
+         * in - so falling back to it looks like working video (frames flow,
+         * the far end sees a picture) when what is actually plugged in is
+         * nothing. Say so once here rather than leaving that to be
+         * discovered from the other end of a call. */
+        if (pj_ansi_stricmp(devices[i].driver, "Colorbar") == 0) {
+            PJ_LOG(2, (THIS_FILE, "No camera found - falling back to \"%s\", "
+                       "a synthetic test source; video calls will send a "
+                       "test pattern, not a picture", devices[i].name));
+        }
+
+        return devices[i].id;
+    }
+
+    /* Not fatal, and deliberately not a reason to refuse video: pjsua
+     * fails the video stream on its own when the call comes up, and
+     * call.c keeps the call going as an audio call (see
+     * pjsocky_call_on_call_media_event()). This line is the one place
+     * that can explain why, before anything has failed yet. */
+    PJ_LOG(2, (THIS_FILE, "No video capture device present - calls will be "
+               "audio-only"));
+
+    return PJMEDIA_VID_INVALID_DEV;
 }
 
 /* v1 supports exactly one account - see CONTEXT.md. */

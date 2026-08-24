@@ -1,6 +1,6 @@
 # pjsocky control protocol
 
-Version: **1.0.0** (tagged — this document is now append-only within the
+Version: **1.1.0** (tagged — this document is now append-only within the
 1.x line: fields may be added, never removed or repurposed. Breaking
 changes bump to 2.x and must be negotiable, see
 [Versioning](#versioning)).
@@ -115,7 +115,7 @@ On connect, the daemon proactively sends a `hello` event before anything
 else, with no request required:
 
 ```json
-{"event": "hello", "data": {"protocol_version": "1.0.0", "daemon_version": "0.1.0"}}
+{"event": "hello", "data": {"protocol_version": "1.1.0", "daemon_version": "0.2.0.1786652435", "pjsip_version": "2.15.1"}}
 ```
 
 - `protocol_version` follows semver against *this document*. Same major
@@ -124,8 +124,27 @@ else, with no request required:
 - Within a major version, only additive changes are made (new optional
   fields, new commands, new events). A client must ignore unknown fields
   and unknown event names rather than erroring.
-- `daemon_version` is informational (pjsocky's own release version), not
-  meaningful for compatibility decisions.
+- `daemon_version` is informational, not meaningful for compatibility
+  decisions. It is `<release>.<build>`: three release components plus a
+  build number, the Unix epoch at which the binary was configured. The
+  release says what the daemon is, the build number says which copy — two
+  binaries built from the same source at different times differ here, which
+  is what makes a stale deployment visible in a log rather than invisible
+  behind a release number that rarely moves. Clients should treat the whole
+  thing as an opaque string; the shape may gain components.
+- `pjsip_version` (added in 1.1.0) is the pjproject the daemon was built
+  against (`pj_get_version()`), also informational. It is here because it
+  is reachable nowhere else: a controller links no pjsip of its own, so
+  without this field a SIP-stack fault in the field can be traced to a
+  pjsocky release but not to the library underneath it. A 1.0.0 client
+  will not know the field and must ignore it, per the additive rule
+  above.
+
+The same three fields are available on demand as
+[`version.get`](#versionget) — `hello` is what the daemon volunteers on
+connect, `version.get` is how a client that reconnected (or that started
+after the daemon did) asks. Both are built from one place in the daemon
+and always agree.
 
 ## Backpressure
 
@@ -219,6 +238,32 @@ yet expose (kept deliberately minimal per `CONTEXT.md`).
 
 Params: none. Result: `{}`. Trivial liveness check.
 
+### `version.get`
+
+Params: none.
+
+Result:
+```json
+{
+  "protocol_version": "1.1.0",
+  "daemon_version": "0.2.0.1786652435",
+  "pjsip_version": "2.15.1"
+}
+```
+Exactly the `hello` event's `data`, on demand — see
+[Versioning](#versioning) for what each field means and which are safe to
+make compatibility decisions on (only `protocol_version`).
+
+Added in protocol 1.1.0. A client that must work against a 1.0.0 daemon
+should fall back to the `hello` it was sent on connect: an older daemon
+answers this with `unknown_command`, and has no `pjsip_version` to give.
+
+Valid in every daemon state and reads no SIP state, so unlike every other
+command here it cannot return an error — "what are you" stays answerable
+by a daemon too broken to answer anything else. Also the cheapest
+liveness check that returns something worth reading; `ping` remains for
+when you want no payload at all.
+
 ### `status.get`
 
 Params: none.
@@ -270,9 +315,16 @@ Wraps `pjsua_vid_enum_devs()` / `pjmedia_vid_dev_info` (`id`, `name`,
 ### `device.set_audio`
 
 Params: `{"capture_id": 0, "playback_id": 0}` (both required, integers as
-returned by `device.list_audio`). Wraps `pjsua_set_snd_dev`. Result: `{}`.
-Valid in any daemon state; takes effect on the currently open sound
-device / next call.
+returned by `device.list_audio`). Wraps `pjsua_set_snd_dev2` with
+`PJSUA_SND_DEV_NO_IMMEDIATE_OPEN`. Result: `{}`. Valid in any daemon state.
+
+**Selecting a device does not open it.** Outside a call the choice is only
+recorded; the hardware is opened when a call's media connects and closed
+again about a second after the call ends, so it is open exactly while there
+is audio to carry. During a call the switch takes effect immediately, as
+before. Selecting while a device is open with no call in progress closes it
+first — that state used to persist indefinitely and produce continuous
+`Underflow` logging from pjmedia's delay buffers.
 
 ### `device.set_video`
 
@@ -280,6 +332,16 @@ Params: `{"capture_id": 0}` (required). Selects the capture device used by
 subsequent `call.dial`/`call.answer` calls with `video:true`. Does not
 itself open the device (rendering/capture opens at call media setup, per
 `on_call_media_state`). Result: `{}`.
+
+`capture_id` must name a device whose `device.list_video` `dir` includes
+`capture`; anything else is rejected. The list also contains render-only
+devices — on hardware with no display it always contains at least the
+daemon's own null renderer — and selecting one of those is not a harmless
+mistake: pjsua opens it in the capture direction regardless, never gets a
+frame out of it, and the call then negotiates video, reports
+`call_media_state` with `has_video: true`, and transmits nothing. A client
+picking a device out of the list should filter on `dir` rather than rely on
+this check.
 
 ### `account.configure`
 
@@ -402,17 +464,35 @@ Result:
   "remote_info": "\"Alice\" <sip:100@example.com>",
   "has_audio": true,
   "has_video": false,
-  "connect_duration_sec": 42
+  "connect_duration_sec": 42,
+  "audio_tx_packets": 2100,
+  "audio_rx_packets": 2098
 }
 ```
 `state` is the string name of the `pjsip_inv_state` enum value (`NULL |
 CALLING | INCOMING | EARLY | CONNECTING | CONFIRMED | DISCONNECTED`).
 
+`<type>_tx_packets`/`<type>_rx_packets` are RTP packet counters from
+`pjsua_call_get_stream_stat`, for `audio` and `video`. **A pair is present
+only when the call has an active stream of that type** — absent is "no such
+stream", which zero cannot express.
+
+They answer the question `has_video` cannot: `has_video: true` means the
+stream exists and SDP agreed, not that a picture is moving. If the far end
+reports no video, read `video_tx_packets` twice a few seconds apart —
+stuck at zero (or absent) means nothing is being produced on this side,
+capture or encoder; climbing means the packets left the box and the far end
+or the network owns the rest.
+
 ## Events
 
 ### `hello`
+```json
+{"event": "hello", "data": {"protocol_version": "1.1.0", "daemon_version": "0.2.0.1786652435", "pjsip_version": "2.15.1"}}
+```
 Sent once, immediately on connect, before any response. See
-[Versioning](#versioning).
+[Versioning](#versioning). The same data is available at any time as the
+[`version.get`](#versionget) command.
 
 ### `error`
 ```json
@@ -468,6 +548,16 @@ further events reference it, and `call_id` may be reused by a later call.
 Fired from `on_call_media_state`. May fire more than once per call (e.g.
 media renegotiation) — always reflects current state, not a delta.
 
+A call that negotiated video can lose it and keep going: if the video
+capture device fails or stops producing frames (camera unplugged, a
+format the device rejects), the daemon removes the video stream from the
+call — a re-INVITE without the `m=video` line — and the call continues as
+an audio call. The client sees this as another `call_media_state` with
+`has_video` false; `call.get_info` then reports no video counters. The
+call is never dropped for a video fault, and video is not retried on the
+same call. The daemon logs one warning when this happens, not one per
+failed frame.
+
 ### `incoming_message`
 ```json
 {"event": "incoming_message", "data": {"from": "sip:200@example.com", "to": "sip:1000@example.com", "mime_type": "text/plain", "body": "hi"}}
@@ -513,7 +603,7 @@ bump, not a v1 concern.
 
 ```
 -> (connect)
-<- {"event":"hello","data":{"protocol_version":"1.0.0","daemon_version":"0.1.0"}}
+<- {"event":"hello","data":{"protocol_version":"1.1.0","daemon_version":"0.2.0.1786652435","pjsip_version":"2.15.1"}}
 -> {"id":"1","cmd":"device.list_audio"}
 <- {"id":"1","ok":true,"result":{"devices":[{"id":0,"name":"default","input_channels":1,"output_channels":2}]}}
 -> {"id":"2","cmd":"account.configure","params":{"sip_uri":"sip:1000@example.com","registrar_uri":"sip:example.com","username":"1000","password":"secret"}}

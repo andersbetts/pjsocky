@@ -1,5 +1,6 @@
 #include "dispatch.h"
 #include "jsonutil.h"
+#include "version.h"
 
 #include "../account.h"
 #include "../call.h"
@@ -296,8 +297,7 @@ static pj_status_t cmd_device_set_video(pj_pool_t *pool,
     if (get_int_member(params, "capture_id", &capture_id) != PJ_SUCCESS)
         return PJ_EINVAL;
 
-    pjsocky_device_set_video_capture(capture_id);
-    return PJ_SUCCESS;
+    return pjsocky_device_set_video_capture(capture_id);
 }
 
 static pj_status_t cmd_call_dial(pj_pool_t *pool,
@@ -354,6 +354,36 @@ static pj_status_t cmd_call_hangup_all(pj_pool_t *pool,
     return pjsocky_call_hangup_all();
 }
 
+/*
+ * Adds the two named counters to `result`, or nothing at all when the call
+ * has no active stream of that type. Absent rather than zero on purpose:
+ * "no video stream" and "a video stream that has sent nothing" are
+ * different answers to the question this exists for, and zero cannot say
+ * which one it is.
+ *
+ * The key names are parameters rather than built from a prefix because the
+ * add_* helpers reference the name bytes instead of copying them (see the
+ * lifetime warning in proto/jsonutil.h) - a key formatted into a local
+ * buffer here would be freed long before the response is serialized. String
+ * literals from the caller are static, and safe.
+ *
+ * The counters go out through pjsocky_json_add_number(), which carries a
+ * float - exact to 2^24 packets, which is hours of video. Precision beyond
+ * that does not matter to a counter being read as "still zero?".
+ */
+static void add_rtp_counters(pj_pool_t *pool, pj_json_elem *result,
+                              pjsua_call_id call_id, pjmedia_type type,
+                              const char *tx_key, const char *rx_key)
+{
+    unsigned tx = 0, rx = 0;
+
+    if (pjsocky_call_get_rtp_counters(call_id, type, &tx, &rx) != PJ_SUCCESS)
+        return;
+
+    pjsocky_json_add_number(pool, result, tx_key, (float)tx);
+    pjsocky_json_add_number(pool, result, rx_key, (float)rx);
+}
+
 static pj_status_t cmd_call_get_info(pj_pool_t *pool,
                                       const pj_json_elem *params,
                                       pj_json_elem *result)
@@ -394,6 +424,15 @@ static pj_status_t cmd_call_get_info(pj_pool_t *pool,
     pjsocky_json_add_bool(pool, result, "has_video", has_video);
     pjsocky_json_add_number(pool, result, "connect_duration_sec",
                              (float)info->connect_duration.sec);
+
+    /* RTP counters per media type, present only for a media type that has
+     * an active stream - see pjsocky_call_get_rtp_counters(). has_video
+     * says the stream exists; these say whether anything is going through
+     * it. */
+    add_rtp_counters(pool, result, call_id, PJMEDIA_TYPE_AUDIO,
+                      "audio_tx_packets", "audio_rx_packets");
+    add_rtp_counters(pool, result, call_id, PJMEDIA_TYPE_VIDEO,
+                      "video_tx_packets", "video_rx_packets");
 
     return PJ_SUCCESS;
 }
@@ -499,8 +538,29 @@ static pj_status_t cmd_im_typing(pj_pool_t *pool,
     return pjsocky_im_typing(&to, is_typing);
 }
 
+/*
+ * docs/PROTOCOL.md "version.get". Answers with exactly what the `hello`
+ * event carries, from the same builder - a client that reconnected, or
+ * that wants the numbers without waiting for a respawn's hello, asks
+ * here and gets the same object.
+ *
+ * Valid in every daemon state and touching no pjsua state at all, which
+ * is why it takes no params and cannot fail: "what are you" must be
+ * answerable by a daemon that is too broken to answer anything else.
+ */
+static pj_status_t cmd_version_get(pj_pool_t *pool,
+                                    const pj_json_elem *params,
+                                    pj_json_elem *result)
+{
+    PJ_UNUSED_ARG(params);
+
+    pjsocky_version_fill(pool, result);
+    return PJ_SUCCESS;
+}
+
 static const cmd_entry CMD_TABLE[] = {
     { "ping", &cmd_ping },
+    { "version.get", &cmd_version_get },
     { "status.get", &cmd_status_get },
     { "account.configure", &cmd_account_configure },
     { "account.register", &cmd_account_register },
