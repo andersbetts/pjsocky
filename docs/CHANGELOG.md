@@ -7,6 +7,17 @@ public API.
 
 ## Unreleased (0.2.0) — protocol 1.1.0
 
+### Security
+
+- **The control socket is created owner-only (0600).** It carries account
+  credentials in clear JSON (`account.configure`), so a socket whose mode was
+  left to the process umask — 0777 when that is 0 — was drivable by any local
+  user. The mode is set as part of creating the socket, and a socket whose mode
+  cannot be narrowed now fails creation rather than listening. The path is still
+  the caller's (`PJSOCKY_SOCK_PATH`), so a consumer that wants it inside a
+  root-only directory puts it there; the default remains `/tmp/pjsocky.sock`
+  for a hand-run bench daemon.
+
 ### Media
 
 - **Video the far end turns on mid-call is now accepted.** pjsua answers an

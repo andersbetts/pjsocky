@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -81,6 +82,19 @@ pj_status_t pjsocky_server_create(pj_pool_t *pool,
     if (status != PJ_SUCCESS) {
         pj_sock_close(srv->listen_sock);
         return status;
+    }
+
+    /* The control protocol carries account credentials in clear JSON, so the
+     * socket is owner-only: connect() needs write permission on the inode, and
+     * 0600 is the one mode that does not depend on the process umask. This is
+     * part of creating the socket, not a nicety - a socket whose mode could
+     * not be narrowed is not one this daemon listens on. */
+    if (chmod(srv->addr.sun_path, S_IRUSR | S_IWUSR) != 0) {
+        PJ_LOG(1, (THIS_FILE, "Could not set %s to 0600: %s",
+                   srv->addr.sun_path, strerror(errno)));
+        pj_sock_close(srv->listen_sock);
+        unlink(srv->addr.sun_path);
+        return PJ_STATUS_FROM_OS(errno);
     }
 
     status = pj_sock_listen(srv->listen_sock, 4);

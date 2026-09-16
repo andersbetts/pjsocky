@@ -31,7 +31,9 @@ let the C implementation grow behavior that isn't described here first.
   client.
 - The daemon does not require authentication at the transport layer in
   v1 — the socket's filesystem permissions (or loopback-only binding) are
-  the trust boundary. This is a deliberate v1 scope limit, see
+  the trust boundary. The daemon creates it mode `0600`, owner-only, so
+  that boundary exists by default rather than depending on the process
+  umask. This is a deliberate v1 scope limit, see
   [Open questions](#open-questions).
 
 ## Framing
