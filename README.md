@@ -89,6 +89,9 @@ Environment variables only — no config file, no CLI flags:
 | `PJSOCKY_VAD` | off | Enable pjmedia's silence detector (`1`/`on`/`yes`/`true`). Off by default: near the detector's threshold a quiet microphone makes the daemon stop sending RTP mid-call, which on headless hardware is indistinguishable from a broken media path |
 | `PJSOCKY_VIDEO_SIZE` | codec default | Video encoder capture size as `WxH`, e.g. `640x480`. Set it to a size the camera produces natively (see `device.list_video` and the daemon's `vid_port.c` log line) to avoid rescaling every frame |
 | `PJSOCKY_VIDEO_FPS` | codec default | Video encoder frame rate, whole frames per second |
+| `PJSOCKY_NAMESERVER` | from `/etc/resolv.conf` | Nameservers for pjsip's asynchronous resolver, space- or comma-separated, up to four. Without one from either source pjsip resolves SIP targets with a blocking `getaddrinfo()` on the control thread, and `call.dial` waits on the system resolver |
+| `PJSOCKY_STUN_SRV` | unset | STUN server for the advertised media address; see the comment in `src/main.c` before turning it on |
+| `PJSOCKY_ICE` | off | ICE on top of STUN (`1`/`on`/`yes`/`true`) |
 
 For running under systemd (dedicated user, socket in `/run/pjsocky/`,
 restart policy, hardening), see [packaging/](packaging/) — the unit

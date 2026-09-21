@@ -27,6 +27,7 @@
 #include <signal.h>
 #include <stdio.h>   /* setvbuf() - see main() */
 #include <stdlib.h>
+#include <string.h>  /* strtok_r() - configure_nameservers() */
 
 #define THIS_FILE                   "main.c"
 #define PJSOCKY_SOCK_PATH_ENV       "PJSOCKY_SOCK_PATH"
@@ -129,6 +130,27 @@
  */
 #define PJSOCKY_ICE_ENV             "PJSOCKY_ICE"
 
+/*
+ * Nameservers for pjsip's own asynchronous DNS resolver, space- or
+ * comma-separated. Unset means the list is read from PJSOCKY_RESOLV_CONF.
+ *
+ * Without a resolver of its own, pjsip resolves a SIP target with a blocking
+ * getaddrinfo() from inside pjsua_call_make_call() - on the thread that also
+ * serves the control socket. The dial reply, and every command queued behind
+ * it, then waits for the system resolver, and that wait is unbounded from the
+ * client's point of view: measured at 5 s on TP4, where the first nameserver
+ * on the list never answers, and the client gave the dial up as failed while
+ * the INVITE was still on its way out. Handing pjsip the nameservers makes
+ * every resolution asynchronous, so call.dial returns at once and a target
+ * that cannot be resolved ends the call with a 503 like any other failure.
+ *
+ * It also turns on SRV resolution for the SIP domain, which is what a
+ * nameserver in pjsua_config means; a domain with no SRV record falls back
+ * to its A record, so nothing changes for a PBX addressed by hostname.
+ */
+#define PJSOCKY_NAMESERVER_ENV      "PJSOCKY_NAMESERVER"
+#define PJSOCKY_RESOLV_CONF         "/etc/resolv.conf"
+
 /* Sanity bounds for the two above - not hardware limits, just far enough
  * out that anything beyond them is a typo rather than an intention. */
 #define PJSOCKY_VIDEO_MAX_DIM       8192
@@ -162,6 +184,64 @@ static pj_bool_t env_flag_is_set(const char *name)
             pj_ansi_stricmp(val, "on") == 0 ||
             pj_ansi_stricmp(val, "yes") == 0 ||
             pj_ansi_stricmp(val, "true") == 0);
+}
+
+/*
+ * Fills ua_cfg->nameserver from PJSOCKY_NAMESERVER, or failing that from
+ * the nameserver lines of PJSOCKY_RESOLV_CONF, up to pjsua's limit of four
+ * in list order. The strings live in `pool`, which pjsua_init() then copies
+ * from. Leaves the count at zero, with pjsip on the blocking system
+ * resolver as before, if neither source names one - and says so, since a
+ * device in that state dials slowly and there is nothing in the SIP log to
+ * show why.
+ */
+static void configure_nameservers(pj_pool_t *pool, pjsua_config *ua_cfg)
+{
+    const char *env = getenv(PJSOCKY_NAMESERVER_ENV);
+    const char *source = PJSOCKY_NAMESERVER_ENV;
+    char buf[512];
+    char *save = NULL;
+    char *tok;
+    unsigned i;
+
+    ua_cfg->nameserver_count = 0;
+
+    if (env && env[0]) {
+        pj_ansi_snprintf(buf, sizeof(buf), "%s", env);
+        for (tok = strtok_r(buf, " ,", &save); tok; tok = strtok_r(NULL, " ,", &save)) {
+            if (ua_cfg->nameserver_count >= PJ_ARRAY_SIZE(ua_cfg->nameserver))
+                break;
+            pj_strdup2_with_null(pool, &ua_cfg->nameserver[ua_cfg->nameserver_count++], tok);
+        }
+    } else {
+        FILE *f = fopen(PJSOCKY_RESOLV_CONF, "r");
+
+        source = PJSOCKY_RESOLV_CONF;
+        if (f) {
+            while (fgets(buf, sizeof(buf), f) &&
+                   ua_cfg->nameserver_count < PJ_ARRAY_SIZE(ua_cfg->nameserver)) {
+                tok = strtok_r(buf, " \t\r\n", &save);
+                if (!tok || pj_ansi_strcmp(tok, "nameserver") != 0)
+                    continue;
+                tok = strtok_r(NULL, " \t\r\n", &save);
+                if (tok)
+                    pj_strdup2_with_null(pool, &ua_cfg->nameserver[ua_cfg->nameserver_count++], tok);
+            }
+            fclose(f);
+        }
+    }
+
+    if (ua_cfg->nameserver_count == 0) {
+        PJ_LOG(2, (THIS_FILE, "no nameserver from %s: SIP targets resolve "
+                   "synchronously, so dialling blocks on the system resolver",
+                   source));
+        return;
+    }
+
+    for (i = 0; i < ua_cfg->nameserver_count; i++)
+        PJ_LOG(3, (THIS_FILE, "nameserver %.*s (%s)",
+                   (int)ua_cfg->nameserver[i].slen, ua_cfg->nameserver[i].ptr,
+                   source));
 }
 
 /*
@@ -368,6 +448,7 @@ int main(void)
     }
 
     pjsua_config_default(&ua_cfg);
+    configure_nameservers(pool, &ua_cfg);
     pjsua_logging_config_default(&log_cfg);
     pjsua_media_config_default(&media_cfg);
 

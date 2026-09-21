@@ -56,6 +56,22 @@ public API.
   the system is silently false invites conclusions drawn from a sequence that
   never happened.
 
+### Signalling
+
+- **SIP targets resolve asynchronously.** pjsip resolved a target's host with a
+  blocking `getaddrinfo()` inside `pjsua_call_make_call()`, on the thread that
+  serves the control socket, so the `call.dial` reply - and every command behind
+  it - waited on the system resolver. On TP4 that was 5 s when the first
+  nameserver did not answer, long enough for the client to give the dial up and
+  place a second call on top of the first. The daemon now hands pjsip its own
+  resolver, with the nameservers from `PJSOCKY_NAMESERVER` (space- or
+  comma-separated) or, unset, from `/etc/resolv.conf`; `call.dial` returns at
+  once and an unresolvable target ends the call with a 503. This also enables
+  SRV lookup for the SIP domain, as pjsua defines a nameserver to mean; a domain
+  without an SRV record falls back to its A record. With no nameserver from
+  either source the old blocking behaviour remains, and is logged at startup.
+  (AI-assisted.)
+
 ### NAT
 
 - **`PJSOCKY_STUN_SRV` and `PJSOCKY_ICE`**, both unset by default — the
