@@ -20,7 +20,7 @@ cmake_minimum_required(VERSION 3.28)
 string(TIMESTAMP PJSOCKY_BUILD_NUMBER "%s")
 
 project(pjsocky
-  VERSION 0.2.0.${PJSOCKY_BUILD_NUMBER}
+  VERSION 0.2.1.${PJSOCKY_BUILD_NUMBER}
   DESCRIPTION "Headless SIP audio/video call daemon built on pjproject"
   # CXX for the link, not for pjsocky's own sources: see LINKER_LANGUAGE below.
   LANGUAGES C CXX
