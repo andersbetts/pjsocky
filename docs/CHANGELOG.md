@@ -5,7 +5,7 @@ separately against docs/PROTOCOL.md (reported in the `hello` event);
 protocol changes are called out explicitly here because they are the
 public API.
 
-## Unreleased (0.2.0) — protocol 1.1.0
+## 0.2.0 — protocol 1.1.0
 
 ### Security
 
