@@ -20,6 +20,14 @@ public API.
 
 ### Media
 
+- **The WebRTC AEC3 echo canceller is actually compiled in.** pjproject's
+  CMake build defines `PJMEDIA_HAS_LIBWEBRTC_AEC3` while its sources test
+  `PJMEDIA_HAS_WEBRTC_AEC3`, so every build so far shipped pjmedia's simple echo
+  suppressor instead: the far end heard much of its own voice back. The define
+  is now set on the `pjmedia` target, with the WebRTC platform defines the
+  library itself is built with, and the daemon links as C++ for the library's
+  runtime. A build that asks for AEC3 and links without it now fails
+  (`cmake/check_aec3.cmake`). (AI-assisted.)
 - **Video the far end turns on mid-call is now accepted.** pjsua answers an
   incoming offer from `call->opt`, whose `vid_cnt` is fixed when the call is set
   up — so a peer that answers with its camera off left the call at `vid_cnt = 0`,
