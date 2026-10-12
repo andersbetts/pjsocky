@@ -5,6 +5,18 @@ separately against docs/PROTOCOL.md (reported in the `hello` event);
 protocol changes are called out explicitly here because they are the
 public API.
 
+## 0.2.1 — protocol 1.1.0
+
+### Media
+
+- **Calls no longer crash the daemon on 32-bit ARM.** With AEC3 compiled in,
+  opening the sound device for a call took an alignment trap in
+  `webrtc_aec3_create` and killed pjsocky: pjproject's ARMv7 workaround, which
+  takes the echo state from the heap instead of a 4-byte-aligned pool, is keyed
+  on `WEBRTC_ARCH_ARM_V7`, and its CMake build never defines it. pjsocky now
+  does, for 32-bit ARM builds. 0.2.0 cannot place a call on that hardware.
+  (AI-assisted.)
+
 ## 0.2.0 — protocol 1.1.0
 
 ### Security

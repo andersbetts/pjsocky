@@ -171,10 +171,25 @@ endif()
 # webrtc_aec3 library, privately. Copied from that target rather than
 # restated, so pjmedia sees exactly what the library was compiled with on
 # whatever architecture pjproject detected.
+#
+# One define the copy does not bring: WEBRTC_ARCH_ARM_V7, which pjproject's
+# autoconf build passes for 32-bit ARM and its CMake build never sets. The
+# AEC3 glue keys its ARMv7 workaround on it - the echo state is taken from
+# the heap with `new` rather than from a pjlib pool, because the pool only
+# guarantees 4-byte alignment and the compiler stores into that struct with
+# NEON instructions that require 8. Without it, opening the sound device for
+# the first call takes an alignment trap and pjsocky dies (on the STM32MP15:
+# "Alignment trap: not handling instruction f9008adf" in webrtc_aec3_create).
+# Only the 32-bit ARM case, matched on the compiler's own pointer size so an
+# aarch64 build - which pjproject handles with WEBRTC_ARCH_ARM64 - is left
+# alone.
 if(PJMEDIA_WITH_WEBRTC_AEC3 AND TARGET pjmedia AND TARGET webrtc_aec3)
   get_target_property(PJSOCKY_WEBRTC_AEC3_DEFS webrtc_aec3 COMPILE_DEFINITIONS)
   target_compile_definitions(pjmedia PRIVATE
     PJMEDIA_HAS_WEBRTC_AEC3=1 ${PJSOCKY_WEBRTC_AEC3_DEFS})
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^arm" AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+    target_compile_definitions(pjmedia PRIVATE WEBRTC_ARCH_ARM_V7=1)
+  endif()
 endif()
 
 # ##############################################################################
