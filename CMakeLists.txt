@@ -22,7 +22,8 @@ string(TIMESTAMP PJSOCKY_BUILD_NUMBER "%s")
 project(pjsocky
   VERSION 0.2.0.${PJSOCKY_BUILD_NUMBER}
   DESCRIPTION "Headless SIP audio/video call daemon built on pjproject"
-  LANGUAGES C
+  # CXX for the link, not for pjsocky's own sources: see LINKER_LANGUAGE below.
+  LANGUAGES C CXX
 )
 
 # ##############################################################################
@@ -153,6 +154,29 @@ if(PJMEDIA_WITH_OPEN_H264_CODEC)
   endif()
 endif()
 
+# The same class of bug for the echo canceller. pjmedia/CMakeLists.txt
+# passes PJMEDIA_WITH_WEBRTC_AEC3 on as PJMEDIA_HAS_LIBWEBRTC_AEC3, but the
+# sources test PJMEDIA_HAS_WEBRTC_AEC3, which pjmedia/config.h then
+# defaults to 0. echo_webrtc_aec3.cpp compiles to an empty translation unit,
+# echo_common.c never offers AEC3, and PJMEDIA_ECHO_DEFAULT falls through to
+# the simple echo suppressor - which only ducks the microphone while it
+# thinks the far end is talking, so whatever it misses goes back to the far
+# end nearly unchanged. libwebrtc_aec3.a is built and linked all the while,
+# and nothing calls it. Both guards are in pjmedia sources, so that target
+# is the only one that needs it.
+#
+# Once it compiles, echo_webrtc_aec3.cpp includes WebRTC's own headers, which
+# refuse to build without the platform defines (WEBRTC_POSIX,
+# WEBRTC_APM_DEBUG_DUMP, WEBRTC_HAS_NEON...) that pjproject gives only to the
+# webrtc_aec3 library, privately. Copied from that target rather than
+# restated, so pjmedia sees exactly what the library was compiled with on
+# whatever architecture pjproject detected.
+if(PJMEDIA_WITH_WEBRTC_AEC3 AND TARGET pjmedia AND TARGET webrtc_aec3)
+  get_target_property(PJSOCKY_WEBRTC_AEC3_DEFS webrtc_aec3 COMPILE_DEFINITIONS)
+  target_compile_definitions(pjmedia PRIVATE
+    PJMEDIA_HAS_WEBRTC_AEC3=1 ${PJSOCKY_WEBRTC_AEC3_DEFS})
+endif()
+
 # ##############################################################################
 # pjsocky
 
@@ -184,6 +208,21 @@ target_link_libraries(pjsocky
     pjsip-simple
     pjsua-lib
 )
+
+# Linked as C++ because pjmedia's echo canceller is: libwebrtc_aec3.a needs
+# libstdc++, and a C link leaves it out. Nothing reached that library while
+# AEC3 compiled to nothing (see PJMEDIA_HAS_WEBRTC_AEC3 above), so the C link
+# used to succeed.
+set_target_properties(pjsocky PROPERTIES LINKER_LANGUAGE CXX)
+
+# A build that asked for AEC3 and linked without it is a failed build, not a
+# daemon that quietly runs on the echo suppressor. See cmake/check_aec3.cmake.
+if(PJMEDIA_WITH_WEBRTC_AEC3)
+  add_custom_command(TARGET pjsocky POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -DBIN=$<TARGET_FILE:pjsocky>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_aec3.cmake
+    VERBATIM)
+endif()
 
 # Reported in the "hello" event (docs/PROTOCOL.md "Versioning") as
 # daemon_version, logged once at startup, and sent as the SIP User-Agent -
